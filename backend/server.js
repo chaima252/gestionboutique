@@ -110,6 +110,12 @@ app.get("/api/etats", (req, res) => res.json(etats));
 app.post("/api/etats", (req, res) => {
   const { date, montantTotal } = req.body;
   if (!date || montantTotal === undefined) return res.status(400).json({ error: "Manque date ou montantTotal" });
+  
+  // ✅ Vérification ajoutée
+  const dejaExistant = etats.find(e => e.date === date);
+  if (dejaExistant)
+    return res.status(400).json({ error: "Un état existe déjà pour le " + date });
+  
   const etat = {
     id: Date.now().toString(), date,
     montantTotal: parseFloat(montantTotal),
@@ -161,9 +167,27 @@ app.delete("/api/etats/:id/justifications/:jid", (req, res) => {
   res.json(etat);
 });
 
+//! changenement
 app.put("/api/etats/:id/fermer", (req, res) => {
   const etat = etats.find(e => e.id === req.params.id);
   if (!etat) return res.status(404).json({ error: "Introuvable" });
+
+  // ✅ Pas encore validé par le financier
+  if (!etat.finFields)
+    return res.status(400).json({ error: "Etat pas encore validé par le financier." });
+
+  const ecart = etat.ecarts?.ecartGlobal || 0;
+
+  // ✅ Calcul de ce qui est justifié
+  const totalJustifie = etat.justifications.reduce((s, j) => s + j.montant, 0);
+  const restant = parseFloat((Math.abs(ecart) - totalJustifie).toFixed(3));
+
+  // ✅ Bloquer si écart non totalement justifié
+  if (restant > 0.001)
+    return res.status(400).json({ 
+      error: "Écart de " + restant.toFixed(3) + " TND non justifié. Fermeture impossible." 
+    });
+
   etat.status = "closed";
   etat.closedAt = Date.now();
   res.json(etat);

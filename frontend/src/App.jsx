@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 
-const API = "http://localhost:3001/api";
+const API = "http://137.74.42.45:3001/api";
 
 const USERS = {
   admin: { email: "admin@boutique.com", password: "admin123", role: "admin" },
@@ -173,6 +173,14 @@ export default function App() {
     setLoading(true);
     try {
       const r = await fetch(API + "/etats", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ date: adminDate, montantTotal: parseFloat(adminTotal) }) });
+     // ✅ Vérification ajoutée
+    if (!r.ok) {
+      const err = await r.json();
+      showToast(err.error, "#ef4444");
+      setLoading(false);
+      return;
+    }
+      
       const data = await r.json();
       setAdminEtats(prev => [data, ...prev]);
       setAdminTotal(""); setAdminView("dashboard"); showToast("Etat ouvert!");
@@ -180,15 +188,26 @@ export default function App() {
     setLoading(false);
   };
 
-  const handleFermerEtat = async (id) => {
-    try {
-      const r = await fetch(API + "/etats/" + id + "/fermer", { method: "PUT", headers: { "Content-Type": "application/json" } });
-      const data = await r.json();
-      setAdminEtats(prev => prev.map(e => e.id === id ? data : e));
-      if (selectedEtatAdmin?.id === id) setSelectedEtatAdmin(data);
-      showToast("Etat ferme!");
-    } catch { showToast("Erreur.", "#ef4444"); }
-  };
+const handleFermerEtat = async (id) => {
+  try {
+    const r = await fetch(API + "/etats/" + id + "/fermer", { 
+      method: "PUT", 
+      headers: { "Content-Type": "application/json" } 
+    });
+
+    // ✅ Afficher l'erreur si backend bloque
+    if (!r.ok) {
+      const err = await r.json();
+      showToast(err.error, "#ef4444");
+      return;
+    }
+
+    const data = await r.json();
+    setAdminEtats(prev => prev.map(e => e.id === id ? data : e));
+    if (selectedEtatAdmin?.id === id) setSelectedEtatAdmin(data);
+    showToast("Etat fermé!");
+  } catch { showToast("Erreur.", "#ef4444"); }
+};
 
   const testEmail = async () => {
     setTestEmailStatus("sending");
@@ -403,9 +422,43 @@ export default function App() {
                     <div className="sb">Detail etat</div>
                     <div className="st">Etat du {selectedEtatAdmin.date}</div>
                   </div>
-                  {selectedEtatAdmin.status === "open" && (
-                    <button className="btn bs" onClick={() => handleFermerEtat(selectedEtatAdmin.id)}>Fermer l etat</button>
-                  )}
+                 {selectedEtatAdmin.status === "open" && (() => {
+                    const ecart = selectedEtatAdmin.ecarts?.ecartGlobal || 0;
+                    const hasEcart = Math.abs(ecart) > 0.001;
+
+                    // Pas encore validé par le financier
+                    if (!selectedEtatAdmin.finFields) {
+                      return (
+                        <div style={{
+                          background: "#2d0d0d", border: "1px solid #7f1d1d44",
+                          borderRadius: 8, padding: "8px 16px", fontSize: 12,
+                          fontFamily: "'JetBrains Mono',monospace", color: "#f87171"
+                        }}>
+                          En attente de validation financier
+                        </div>
+                      );
+                    }
+
+                    // Validé AVEC écart → jamais de bouton fermer
+                    if (hasEcart) {
+                      return (
+                        <div style={{
+                          background: "#2d1a0d", border: "1px solid #92400e44",
+                          borderRadius: 8, padding: "8px 16px", fontSize: 12,
+                          fontFamily: "'JetBrains Mono',monospace", color: "#fbbf24"
+                        }}>
+                          En attente de recouvrement — écart {ecart.toFixed(3)} TND
+                        </div>
+                      );
+                    }
+
+                    // Validé SANS écart → bouton fermer visible
+                    return (
+                      <button className="btn bs" onClick={() => handleFermerEtat(selectedEtatAdmin.id)}>
+                        Fermer l etat
+                      </button>
+                    );
+                  })()}
                   {selectedEtatAdmin.status === "closed" && (
                     <div style={{ background: "#0d2318", border: "1px solid #16532d", borderRadius: 8, padding: "8px 16px", fontSize: 12, fontFamily: "'JetBrains Mono',monospace", color: "#4ade80" }}>FERME</div>
                   )}
