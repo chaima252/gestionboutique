@@ -22,6 +22,15 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
+// Modes de paiement par défaut pour chaque champ financier
+const FIELD_MODES = {
+  banque: "virement",
+  tpe: "tpe",
+  espece: "espece",
+  paiementLivraison: "espece",
+  steLivraison: "cheque",
+};
+
 // ═══════════════════════════════
 //  SQLITE SETUP
 // ═══════════════════════════════
@@ -37,6 +46,7 @@ db.exec(`
     date TEXT NOT NULL UNIQUE,
     montantTotal REAL NOT NULL,
     finFields TEXT,
+    finModes TEXT,
     ecarts TEXT,
     totalFin REAL,
     justifications TEXT DEFAULT '[]',
@@ -74,9 +84,10 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS recouvrements (
     id TEXT PRIMARY KEY,
     etatId TEXT NOT NULL,
-    justificationId TEXT NOT NULL UNIQUE,
+    justificationId TEXT NOT NULL,
     dateRecuperation TEXT NOT NULL,
     montant REAL NOT NULL,
+    modePaiement TEXT DEFAULT 'espece',
     createdAt INTEGER
   );
 `);
@@ -86,6 +97,7 @@ function getEtats() {
   return db.prepare("SELECT * FROM etats").all().map(e => ({
     ...e,
     finFields: e.finFields ? JSON.parse(e.finFields) : null,
+    finModes: e.finModes ? JSON.parse(e.finModes) : null,
     ecarts: e.ecarts ? JSON.parse(e.ecarts) : null,
     justifications: e.justifications ? JSON.parse(e.justifications) : [],
   }));
@@ -97,6 +109,7 @@ function getEtatById(id) {
   return {
     ...e,
     finFields: e.finFields ? JSON.parse(e.finFields) : null,
+    finModes: e.finModes ? JSON.parse(e.finModes) : null,
     ecarts: e.ecarts ? JSON.parse(e.ecarts) : null,
     justifications: e.justifications ? JSON.parse(e.justifications) : [],
   };
@@ -105,11 +118,12 @@ function getEtatById(id) {
 function saveEtat(etat) {
   db.prepare(`
     INSERT OR REPLACE INTO etats
-    (id, date, montantTotal, finFields, ecarts, totalFin, justifications, status, openedAt, closedAt, lastNotifiedAt)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (id, date, montantTotal, finFields, finModes, ecarts, totalFin, justifications, status, openedAt, closedAt, lastNotifiedAt)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     etat.id, etat.date, etat.montantTotal,
     etat.finFields ? JSON.stringify(etat.finFields) : null,
+    etat.finModes ? JSON.stringify(etat.finModes) : null,
     etat.ecarts ? JSON.stringify(etat.ecarts) : null,
     etat.totalFin ?? null,
     JSON.stringify(etat.justifications || []),
@@ -147,9 +161,9 @@ function getRecouvrements() {
 
 function saveRecouvrement(r) {
   db.prepare(`
-    INSERT OR REPLACE INTO recouvrements (id, etatId, justificationId, dateRecuperation, montant, createdAt)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(r.id, r.etatId, r.justificationId, r.dateRecuperation, r.montant, r.createdAt);
+    INSERT OR REPLACE INTO recouvrements (id, etatId, justificationId, dateRecuperation, montant, modePaiement, createdAt)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(r.id, r.etatId, r.justificationId, r.dateRecuperation, r.montant, r.modePaiement || 'espece', r.createdAt);
 }
 
 // ═══════════════════════════════
@@ -243,7 +257,7 @@ app.post("/api/etats", (req, res) => {
   const etat = {
     id: Date.now().toString(), date,
     montantTotal: parseFloat(montantTotal),
-    finFields: null, ecarts: null, totalFin: null,
+    finFields: null, finModes: null, ecarts: null, totalFin: null,
     justifications: [],
     status: "open",
     openedAt: Date.now(), closedAt: null, lastNotifiedAt: 0,
@@ -257,42 +271,114 @@ app.put("/api/etats/:id/valider", (req, res) => {
   if (!etat) return res.status(404).json({ error: "Introuvable" });
   if (etat.status === "closed") return res.status(400).json({ error: "Deja ferme" });
 
-  const { finFields } = req.body;
+  const { finFields, finModes } = req.body;
   etat.finFields = finFields;
+  etat.finModes = finModes || {};
+
   const totalFin = Object.values(finFields).reduce((s, v) => s + parseFloat(v || 0), 0);
   etat.totalFin = parseFloat(totalFin.toFixed(3));
   const ecartGlobal = parseFloat((totalFin - etat.montantTotal).toFixed(3));
   etat.ecarts = { ecartGlobal };
 
-  if (Math.abs(ecartGlobal) < 0.001) {
+  // Vérifier si tous les montants non-nuls sont en espece
+  const modes = finModes || {};
+  const hasNonZeroNonEspece = Object.keys(finFields).some(k => {
+    const val = parseFloat(finFields[k] || 0);
+    const mode = modes[k] || FIELD_MODES[k] || "espece";
+    return val !== 0 && mode !== "espece";
+  });
+
+  // Fermeture auto UNIQUEMENT si écart = 0 ET tout est en espece
+  if (Math.abs(ecartGlobal) < 0.001 && !hasNonZeroNonEspece) {
     etat.status = "closed";
     etat.closedAt = Date.now();
-    console.log("Etat ferme automatiquement (aucun ecart): " + etat.id);
+    console.log("Etat ferme automatiquement (aucun ecart + tout espece): " + etat.id);
+  } else if (Math.abs(ecartGlobal) < 0.001 && hasNonZeroNonEspece) {
+    console.log("Etat NON ferme auto (ecart=0 mais mode non-espece): " + etat.id);
   }
+
   saveEtat(etat);
   res.json(etat);
 });
 
-app.post("/api/etats/:id/justifications", (req, res) => {
+app.post("/api/etats/:id/justifications", upload.single("pieceJointe"), (req, res) => {
   const etat = getEtatById(req.params.id);
   if (!etat) return res.status(404).json({ error: "Introuvable" });
 
-  const { type, montant, note } = req.body;
+  const { type, montant, note, dateEcart, modePaiement } = req.body;
+  const justId = Date.now().toString();
+  const montantVal = parseFloat(montant);
+  const modeVal = modePaiement || "espece";
+  const dateEcartVal = dateEcart || etat.date;
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Pièce jointe obligatoire pour non-espece
+  if (modeVal !== "espece" && !req.file) {
+    return res.status(400).json({ error: "Piece jointe obligatoire pour TPE/Virement/Cheque" });
+  }
+
+  // Ajouter la justification
   etat.justifications.push({
-    id: Date.now().toString(), type,
-    montant: parseFloat(montant), note,
-    recupere: false, dateRecuperation: null,
+    id: justId,
+    type,
+    montant: montantVal,
+    note: note || "",
+    dateEcart: dateEcartVal,
+    modePaiement: modeVal,
+    pieceJointe: req.file ? req.file.filename : null,
+    montantRecupere: 0,
+    recupere: false,
+    dateRecuperation: null,
   });
+
+  // Si mode espece → recouvrement auto + caisse + fermeture auto possible
+  if (modeVal === "espece") {
+    const recouvrement = {
+      id: (Date.now() + 1).toString(),
+      etatId: etat.id,
+      justificationId: justId,
+      dateRecuperation: today,
+      montant: montantVal,
+      modePaiement: "espece",
+      createdAt: Date.now(),
+    };
+    saveRecouvrement(recouvrement);
+
+    // Marquer comme recupere
+    const just = etat.justifications.find(j => j.id === justId);
+    just.montantRecupere = montantVal;
+    just.recupere = true;
+    just.dateRecuperation = today;
+
+    // Mettre à jour caisse
+    const caisses = getCaisses();
+    const caisseDuJour = caisses.find(c => c.date === today);
+    if (caisseDuJour) {
+      const calc = calculerCaisse(today);
+      saveCaisse({ ...caisseDuJour, ...calc });
+    }
+
+    // Fermeture auto si tout est recupere ET tout est en espece
+    const tousRecuperes = etat.justifications.every(j => j.recupere);
+    const tousEspece = etat.justifications.every(j => j.modePaiement === "espece");
+    const ecart = Math.abs(etat.ecarts?.ecartGlobal || 0);
+    const totalCouvert = etat.justifications.reduce((s, j) => s + j.montant, 0);
+
+    if (tousRecuperes && tousEspece && ecart > 0.001 && totalCouvert >= ecart - 0.001) {
+      etat.status = "closed";
+      etat.closedAt = Date.now();
+      etat.ecarts = { ecartGlobal: 0 };
+      etat.totalFin = etat.montantTotal;
+      console.log("Etat ferme auto (tout espece + ecart couvert): " + etat.id);
+    }
+  }
+
   saveEtat(etat);
   res.json(etat);
 });
 
 app.delete("/api/etats/:id/justifications/:jid", (req, res) => {
-  const etat = getEtatById(req.params.id);
-  if (!etat) return res.status(404).json({ error: "Introuvable" });
-  etat.justifications = etat.justifications.filter(j => j.id !== req.params.jid);
-  saveEtat(etat);
-  res.json(etat);
+  return res.status(403).json({ error: "Les ecarts sont verrouilles et ne peuvent pas etre supprimes." });
 });
 
 app.put("/api/etats/:id/fermer", (req, res) => {
@@ -324,7 +410,7 @@ app.get("/api/recouvrements", (req, res) => {
   const enriched = recouvrements.map(r => {
     const etat = etats.find(e => e.id === r.etatId);
     const just = etat?.justifications.find(j => j.id === r.justificationId);
-    return { ...r, etatDate: etat?.date, justType: just?.type, justNote: just?.note };
+    return { ...r, etatDate: etat?.date, justType: just?.type, justNote: just?.note, justPieceJointe: just?.pieceJointe };
   });
   res.json(enriched);
 });
@@ -335,12 +421,21 @@ app.get("/api/ecarts-a-recuperer", (req, res) => {
   const result = [];
   etats.forEach(etat => {
     etat.justifications.forEach(j => {
-      const dejaRecupere = recouvrements.find(r => r.justificationId === j.id);
-      if (!dejaRecupere) {
+      if (j.recupere) return;
+      const recouvs = recouvrements.filter(r => r.justificationId === j.id);
+      const montantDejaRecup = recouvs.reduce((s, r) => s + r.montant, 0);
+      const restant = parseFloat((j.montant - montantDejaRecup).toFixed(3));
+      if (restant > 0.001) {
         result.push({
           etatId: etat.id, etatDate: etat.date,
           justificationId: j.id, type: j.type,
-          montant: j.montant, note: j.note,
+          montant: j.montant,
+          montantDejaRecup,
+          restant,
+          note: j.note,
+          dateEcart: j.dateEcart,
+          modePaiement: j.modePaiement,
+          pieceJointe: j.pieceJointe,
         });
       }
     });
@@ -349,38 +444,59 @@ app.get("/api/ecarts-a-recuperer", (req, res) => {
 });
 
 app.post("/api/recouvrements", (req, res) => {
-  const { etatId, justificationId, dateRecuperation, montant } = req.body;
-  if (!etatId || !justificationId || !dateRecuperation) return res.status(400).json({ error: "Manque données" });
+  const { etatId, justificationId, dateRecuperation, montant, modePaiement } = req.body;
+  if (!etatId || !justificationId || !dateRecuperation || !montant)
+    return res.status(400).json({ error: "Manque donnees" });
 
   const etat = getEtatById(etatId);
   if (!etat) return res.status(404).json({ error: "Etat introuvable" });
   const just = etat.justifications.find(j => j.id === justificationId);
   if (!just) return res.status(404).json({ error: "Justification introuvable" });
+  if (just.recupere) return res.status(400).json({ error: "Deja entierement recupere" });
 
+  const montantRecup = parseFloat(montant);
   const recouvrements = getRecouvrements();
-  if (recouvrements.find(r => r.justificationId === justificationId))
-    return res.status(400).json({ error: "Deja recupere" });
+
+  const montantDejaRecup = recouvrements.filter(r => r.justificationId === justificationId).reduce((s, r) => s + r.montant, 0);
+  const restant = parseFloat((just.montant - montantDejaRecup).toFixed(3));
+  if (montantRecup > restant + 0.001)
+    return res.status(400).json({ error: "Montant depasse le restant de " + restant.toFixed(3) + " TND" });
 
   const recouvrement = {
     id: Date.now().toString(),
     etatId, justificationId, dateRecuperation,
-    montant: parseFloat(montant || just.montant),
+    montant: montantRecup,
+    modePaiement: modePaiement || "espece",
     createdAt: Date.now(),
   };
   saveRecouvrement(recouvrement);
 
-  just.recupere = true;
-  just.dateRecuperation = dateRecuperation;
+  just.montantRecupere = parseFloat((montantDejaRecup + montantRecup).toFixed(3));
+
+  if (Math.abs(just.montantRecupere - just.montant) < 0.001) {
+    just.recupere = true;
+    just.dateRecuperation = dateRecuperation;
+  }
   saveEtat(etat);
 
-  const caisses = getCaisses();
-  const caisseDuJour = caisses.find(c => c.date === dateRecuperation);
-  if (caisseDuJour) {
-    const calc = calculerCaisse(dateRecuperation);
-    saveCaisse({ ...caisseDuJour, ...calc });
+  const tousRecuperes = etat.justifications.every(j => j.recupere);
+  if (tousRecuperes && etat.status === "open") {
+    etat.status = "closed";
+    etat.closedAt = Date.now();
+    saveEtat(etat);
+    console.log("Etat ferme automatiquement (tous ecarts recuperes): " + etat.id);
   }
 
-  res.status(201).json(recouvrement);
+  if ((modePaiement || "espece") === "espece") {
+    const caisses = getCaisses();
+    const caisseDuJour = caisses.find(c => c.date === dateRecuperation);
+    if (caisseDuJour) {
+      const calc = calculerCaisse(dateRecuperation);
+      saveCaisse({ ...caisseDuJour, ...calc });
+    }
+  }
+
+  res.status(201).json({ recouvrement, etat });
 });
 
 // ═══════════════════════════════
@@ -468,8 +584,17 @@ app.get("/api/caisses/preview/:date", (req, res) => {
 
   const etatDuJour = etats.find(e => e.date === date && e.finFields);
   const totalEtatJour = etatDuJour ? parseFloat(etatDuJour.totalFin || 0) : 0;
+
   const totalVerse = versements.filter(v => v.date === date).reduce((s, v) => s + v.montant, 0);
-  const totalRecouv = recouvrements.filter(r => r.dateRecuperation === date).reduce((s, r) => s + r.montant, 0);
+
+  const recouvEspece = recouvrements.filter(r => {
+    const sameDate = r.dateRecuperation === date;
+    const isEspece = !r.modePaiement || r.modePaiement === "espece" || r.modePaiement === null;
+    return sameDate && isEspece;
+  });
+  const totalRecouv = recouvEspece.reduce((s, r) => s + parseFloat(r.montant || 0), 0);
+  console.log("Preview " + date + " recouv:", recouvEspece.length, "total:", totalRecouv);
+
   const solde = parseFloat((initial + totalEtatJour + totalRecouv - totalVerse - depenses).toFixed(3));
 
   res.json({ initial, totalEtatJour, totalVerse, totalRecouv, depenses, solde, reste: solde });

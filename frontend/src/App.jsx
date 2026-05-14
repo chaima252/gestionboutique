@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 
-const API = "http://137.74.42.45:3001/api";
+const API = "http://localhost:3001/api";
 
 const USERS = {
   admin: { email: "admin@boutique.com", password: "admin123", role: "admin" },
@@ -11,6 +11,16 @@ const FIELD_LABELS = {
   banque: "Banque", tpe: "TPE", espece: "Espece",
   paiementLivraison: "Paiement a la livraison", steLivraison: "STE de livraison",
 };
+
+// Modes de paiement par défaut pour chaque champ
+const FIELD_MODES = {
+  banque: "virement",
+  tpe: "tpe",
+  espece: "espece",
+  paiementLivraison: "espece",
+  steLivraison: "cheque",
+};
+
 const INITIAL_FIN = { banque: "", tpe: "", espece: "", paiementLivraison: "", steLivraison: "" };
 
 const fmt = (v) => new Intl.NumberFormat("fr-TN", { style: "currency", currency: "TND", minimumFractionDigits: 3 }).format(parseFloat(v) || 0);
@@ -109,7 +119,7 @@ export default function App() {
   const [selectedEtat, setSelectedEtat] = useState(null);
   const [finFields, setFinFields] = useState({ ...INITIAL_FIN });
   const [finStep, setFinStep] = useState("list");
-  const [newJust, setNewJust] = useState({ type: "", montant: "", note: "" });
+  const [newJust, setNewJust] = useState({ type: "", montant: "", note: "", dateEcart: new Date().toISOString().slice(0,10), modePaiement: "espece", pieceJointe: null });
 
   // Financier - Versement
   const [versDate, setVersDate] = useState(new Date().toISOString().slice(0, 10));
@@ -127,6 +137,8 @@ export default function App() {
   const [ecartsARecuperer, setEcartsARecuperer] = useState([]);
   const [selectedEcart, setSelectedEcart] = useState(null);
   const [dateRecup, setDateRecup] = useState(new Date().toISOString().slice(0, 10));
+  const [montantRecup, setMontantRecup] = useState("");
+  const [modePaiementRecup, setModePaiementRecup] = useState("espece");
   const [showRecoupModal, setShowRecoupModal] = useState(false);
 
   const showToast = (msg, color = "#22c55e") => {
@@ -173,14 +185,12 @@ export default function App() {
     setLoading(true);
     try {
       const r = await fetch(API + "/etats", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ date: adminDate, montantTotal: parseFloat(adminTotal) }) });
-     // ✅ Vérification ajoutée
-    if (!r.ok) {
-      const err = await r.json();
-      showToast(err.error, "#ef4444");
-      setLoading(false);
-      return;
-    }
-      
+      if (!r.ok) {
+        const err = await r.json();
+        showToast(err.error, "#ef4444");
+        setLoading(false);
+        return;
+      }
       const data = await r.json();
       setAdminEtats(prev => [data, ...prev]);
       setAdminTotal(""); setAdminView("dashboard"); showToast("Etat ouvert!");
@@ -188,26 +198,23 @@ export default function App() {
     setLoading(false);
   };
 
-const handleFermerEtat = async (id) => {
-  try {
-    const r = await fetch(API + "/etats/" + id + "/fermer", { 
-      method: "PUT", 
-      headers: { "Content-Type": "application/json" } 
-    });
-
-    // ✅ Afficher l'erreur si backend bloque
-    if (!r.ok) {
-      const err = await r.json();
-      showToast(err.error, "#ef4444");
-      return;
-    }
-
-    const data = await r.json();
-    setAdminEtats(prev => prev.map(e => e.id === id ? data : e));
-    if (selectedEtatAdmin?.id === id) setSelectedEtatAdmin(data);
-    showToast("Etat fermé!");
-  } catch { showToast("Erreur.", "#ef4444"); }
-};
+  const handleFermerEtat = async (id) => {
+    try {
+      const r = await fetch(API + "/etats/" + id + "/fermer", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" }
+      });
+      if (!r.ok) {
+        const err = await r.json();
+        showToast(err.error, "#ef4444");
+        return;
+      }
+      const data = await r.json();
+      setAdminEtats(prev => prev.map(e => e.id === id ? data : e));
+      if (selectedEtatAdmin?.id === id) setSelectedEtatAdmin(data);
+      showToast("Etat fermé!");
+    } catch { showToast("Erreur.", "#ef4444"); }
+  };
 
   const testEmail = async () => {
     setTestEmailStatus("sending");
@@ -222,10 +229,13 @@ const handleFermerEtat = async (id) => {
 
   // ── FINANCIER ETATS ──
   const selectEtat = (etat) => {
-    if (etat.status === "closed") return;
     setSelectedEtat(etat);
     setFinFields({ ...INITIAL_FIN });
-    setFinStep(etat.finFields ? "ecart" : "saisie");
+    if (etat.status === "closed") {
+      setFinStep("readonly");
+    } else {
+      setFinStep(etat.finFields ? "ecart" : "saisie");
+    }
   };
 
   const handleFinancierValidate = async () => {
@@ -234,15 +244,26 @@ const handleFermerEtat = async (id) => {
     }
     setLoading(true);
     try {
-      const r = await fetch(API + "/etats/" + selectedEtat.id + "/valider", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ finFields }) });
+      const r = await fetch(API + "/etats/" + selectedEtat.id + "/valider", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ finFields, finModes: FIELD_MODES })
+      });
       const data = await r.json();
       setSelectedEtat(data);
       const ecart = data.ecarts?.ecartGlobal || 0;
-      if (data.status === "closed" || Math.abs(ecart) < 0.001) {
+
+      if (data.status === "closed") {
+        // Fermé automatiquement (tout espece + ecart 0)
         setFinStep("list");
         loadEtats();
         showToast("Aucun ecart! Etat ferme automatiquement.", "#22c55e");
+      } else if (Math.abs(ecart) < 0.001) {
+        // Ecart = 0 mais mode non-espece → admin doit fermer
+        setFinStep("ecart");
+        showToast("Validation OK. En attente de fermeture par l'admin (mode non-espece).", "#f59e0b");
       } else {
+        // Ecart détecté
         setFinStep("ecart");
         showToast("Ecart detecte : " + (ecart > 0 ? "+" : "") + ecart.toFixed(3) + " TND", "#f59e0b");
       }
@@ -252,17 +273,44 @@ const handleFermerEtat = async (id) => {
 
   const addJustification = async () => {
     if (!newJust.type || !newJust.montant || !newJust.note) return showToast("Remplissez tous les champs.", "#ef4444");
+    if (newJust.modePaiement !== "espece" && !newJust.pieceJointe) return showToast("Piece jointe obligatoire pour TPE/Virement/Cheque.", "#ef4444");
+
     setLoading(true);
     try {
-      const r = await fetch(API + "/etats/" + selectedEtat.id + "/justifications", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(newJust) });
-      setSelectedEtat(await r.json()); setNewJust({ type: "", montant: "", note: "" });
-      showToast("Justification ajoutee.");
+      const fd = new FormData();
+      fd.append("type", newJust.type);
+      fd.append("montant", newJust.montant);
+      fd.append("note", newJust.note);
+      fd.append("dateEcart", newJust.dateEcart);
+      fd.append("modePaiement", newJust.modePaiement);
+      if (newJust.pieceJointe) fd.append("pieceJointe", newJust.pieceJointe);
+
+      const r = await fetch(API + "/etats/" + selectedEtat.id + "/justifications", { method: "POST", body: fd });
+
+      if (!r.ok) {
+        const err = await r.json();
+        showToast(err.error, "#ef4444");
+        setLoading(false);
+        return;
+      }
+
+      const data = await r.json();
+      setSelectedEtat(data);
+      setNewJust({ type: "", montant: "", note: "", dateEcart: new Date().toISOString().slice(0, 10), modePaiement: "espece", pieceJointe: null });
+
+      // Si espece → rafraichir le preview de la caisse d'aujourd'hui
+      if (newJust.modePaiement === "espece") {
+        const today = new Date().toISOString().slice(0, 10);
+        loadCaissePreview(today, caisseDeps);
+      }
+
+      showToast("Ecart ajoute.");
     } catch { showToast("Erreur.", "#ef4444"); }
     setLoading(false);
   };
 
   const removeJustification = async (jid) => {
-    try { const r = await fetch(API + "/etats/" + selectedEtat.id + "/justifications/" + jid, { method: "DELETE" }); setSelectedEtat(await r.json()); } catch {}
+    try { const r = await fetch(API + "/etats/" + selectedEtat.id + "/justifications/" + jid, { method: "DELETE" }); setSelectedEtat(await r.json()); } catch { }
   };
 
   // ── VERSEMENT ──
@@ -305,11 +353,11 @@ const handleFermerEtat = async (id) => {
     try {
       const r = await fetch(API + "/recouvrements", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ etatId: selectedEcart.etatId, justificationId: selectedEcart.justificationId, dateRecuperation: dateRecup, montant: selectedEcart.montant }),
+        body: JSON.stringify({ etatId: selectedEcart.etatId, justificationId: selectedEcart.justificationId, dateRecuperation: dateRecup, montant: parseFloat(montantRecup) || selectedEcart.restant, modePaiement: modePaiementRecup }),
       });
       if (!r.ok) { const e = await r.json(); showToast(e.error, "#ef4444"); setLoading(false); return; }
       await r.json();
-      setShowRecoupModal(false); setSelectedEcart(null);
+      setShowRecoupModal(false); setSelectedEcart(null); setMontantRecup(""); setModePaiementRecup("espece");
       loadEcartsARecuperer(); loadCaisses(); loadCaissePreview(caisseDate);
       showToast("Ecart marque comme recupere le " + dateRecup + "!");
     } catch { showToast("Erreur.", "#ef4444"); }
@@ -347,7 +395,7 @@ const handleFermerEtat = async (id) => {
       {title && <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380", marginBottom: 10 }}>{title}</div>}
       <div className="read-row"><span style={{ color: "#8a7f9a", fontSize: 13 }}>Initial (reste j-1)</span><span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 13 }}>{fmt(data.initial)}</span></div>
       <div className="read-row"><span style={{ color: "#4ade80", fontSize: 13 }}>+ Total etat de vente</span><span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 13, color: "#4ade80" }}>+{fmt(data.totalEtatJour)}</span></div>
-      {data.totalRecouv > 0 && <div className="read-row"><span style={{ color: "#a78bfa", fontSize: 13 }}>+ Ecarts recuperes</span><span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 13, color: "#a78bfa" }}>+{fmt(data.totalRecouv)}</span></div>}
+      {(data.totalRecouv > 0) && <div className="read-row"><span style={{ color: "#a78bfa", fontSize: 13 }}>+ Ecarts recuperes</span><span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 13, color: "#a78bfa" }}>+{fmt(data.totalRecouv)}</span></div>}
       <div className="read-row"><span style={{ color: "#f87171", fontSize: 13 }}>- Verse banque</span><span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 13, color: "#f87171" }}>-{fmt(data.totalVerse)}</span></div>
       {data.depenses > 0 && <div className="read-row"><span style={{ color: "#f87171", fontSize: 13 }}>- Depenses</span><span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 13, color: "#f87171" }}>-{fmt(data.depenses)}</span></div>}
       <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 10, fontWeight: 700, fontSize: 16 }}>
@@ -388,7 +436,6 @@ const handleFermerEtat = async (id) => {
   if (user.role === "admin") {
     const nbOuverts = adminEtats.filter(e => e.status === "open").length;
     const nbFermes = adminEtats.filter(e => e.status === "closed").length;
-    const nbEcarts = adminEtats.filter(e => e.ecarts && Math.abs(e.ecarts.ecartGlobal || 0) > 0.001).length;
 
     return (
       <div style={{ background: "#0f1117", minHeight: "100vh" }}>
@@ -422,9 +469,16 @@ const handleFermerEtat = async (id) => {
                     <div className="sb">Detail etat</div>
                     <div className="st">Etat du {selectedEtatAdmin.date}</div>
                   </div>
-                 {selectedEtatAdmin.status === "open" && (() => {
+                  {selectedEtatAdmin.status === "open" && (() => {
                     const ecart = selectedEtatAdmin.ecarts?.ecartGlobal || 0;
                     const hasEcart = Math.abs(ecart) > 0.001;
+                    const justifs = selectedEtatAdmin.justifications || [];
+                    // Couvert = espece recupere OU non-espece justifie (TPE/virement/cheque avec piece jointe)
+                    const totalCouvert = justifs.reduce((s, j) => {
+                      if (j.modePaiement === "espece") return s + (j.montantRecupere || 0);
+                      return s + (j.montant || 0); // non-espece: justification suffit
+                    }, 0);
+                    const restant = Math.max(0, parseFloat((Math.abs(ecart) - totalCouvert).toFixed(3)));
 
                     // Pas encore validé par le financier
                     if (!selectedEtatAdmin.finFields) {
@@ -439,20 +493,20 @@ const handleFermerEtat = async (id) => {
                       );
                     }
 
-                    // Validé AVEC écart → jamais de bouton fermer
-                    if (hasEcart) {
+                    // Validé AVEC écart non couvert
+                    if (hasEcart && restant > 0.001) {
                       return (
                         <div style={{
                           background: "#2d1a0d", border: "1px solid #92400e44",
                           borderRadius: 8, padding: "8px 16px", fontSize: 12,
                           fontFamily: "'JetBrains Mono',monospace", color: "#fbbf24"
                         }}>
-                          En attente de recouvrement — écart {ecart.toFixed(3)} TND
+                          En attente de justification — reste {restant.toFixed(3)} TND
                         </div>
                       );
                     }
 
-                    // Validé SANS écart → bouton fermer visible
+                    // Validé SANS écart ou tout justifié/recouvré → bouton fermer visible
                     return (
                       <button className="btn bs" onClick={() => handleFermerEtat(selectedEtatAdmin.id)}>
                         Fermer l etat
@@ -466,21 +520,33 @@ const handleFermerEtat = async (id) => {
                 <div style={{ background: "#1a1a2e", border: "1px solid #2e2a3e", borderRadius: 8, padding: "14px 18px", marginBottom: 16 }}>
                   <div className="read-row"><span style={{ color: "#8a7f9a" }}>Montant admin</span><span style={{ color: "#a78bfa", fontFamily: "'JetBrains Mono',monospace", fontWeight: 600 }}>{fmt(selectedEtatAdmin.montantTotal)}</span></div>
                   {selectedEtatAdmin.totalFin !== null && <div className="read-row"><span style={{ color: "#8a7f9a" }}>Total financier</span><span style={{ color: "#4ade80", fontFamily: "'JetBrains Mono',monospace", fontWeight: 600 }}>{fmt(selectedEtatAdmin.totalFin)}</span></div>}
-                  {selectedEtatAdmin.ecarts && <div className="read-row"><span style={{ color: "#8a7f9a" }}>Ecart</span><span style={{ fontFamily: "'JetBrains Mono',monospace", fontWeight: 600, color: Math.abs(selectedEtatAdmin.ecarts.ecartGlobal) < 0.001 ? "#4ade80" : "#f87171" }}>{fmt(selectedEtatAdmin.ecarts.ecartGlobal)}</span></div>}
+                  {selectedEtatAdmin.ecarts && (
+                    <div className="read-row">
+                      <span style={{ color: "#8a7f9a" }}>Ecart</span>
+                      <span style={{ fontFamily: "'JetBrains Mono',monospace", fontWeight: 600, color: selectedEtatAdmin.status === "closed" ? "#4ade80" : Math.abs(selectedEtatAdmin.ecarts.ecartGlobal) < 0.001 ? "#4ade80" : "#f87171" }}>
+                        {selectedEtatAdmin.status === "closed" && Math.abs(selectedEtatAdmin.ecarts.ecartGlobal) > 0.001
+                          ? `Écart recouvré de ${fmt(Math.abs(selectedEtatAdmin.ecarts.ecartGlobal))}`
+                          : fmt(selectedEtatAdmin.ecarts.ecartGlobal)}
+                      </span>
+                    </div>
+                  )}
                 </div>
                 {selectedEtatAdmin.finFields && (
                   <div style={{ marginBottom: 16 }}>
                     <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380", marginBottom: 10 }}>DETAIL FINANCIER</div>
                     <div style={{ background: "#1a1a2e", border: "1px solid #2e2a3e", borderRadius: 8, padding: "14px 18px" }}>
                       {Object.keys(FIELD_LABELS).map(k => (
-                        <div className="read-row" key={k}><span style={{ color: "#8a7f9a" }}>{FIELD_LABELS[k]}</span><span style={{ fontFamily: "'JetBrains Mono',monospace" }}>{fmt(selectedEtatAdmin.finFields[k])}</span></div>
+                        <div className="read-row" key={k}>
+                          <span style={{ color: "#8a7f9a" }}>{FIELD_LABELS[k]} <span style={{ fontSize: 10, color: "#6b6380" }}>({selectedEtatAdmin.finModes?.[k] || FIELD_MODES[k]})</span></span>
+                          <span style={{ fontFamily: "'JetBrains Mono',monospace" }}>{fmt(selectedEtatAdmin.finFields[k])}</span>
+                        </div>
                       ))}
                     </div>
                   </div>
                 )}
                 {selectedEtatAdmin.justifications?.length > 0 && (
                   <div>
-                    <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380", marginBottom: 10 }}>JUSTIFICATIONS ({selectedEtatAdmin.justifications.length})</div>
+                    <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380", marginBottom: 10 }}>ECARTS ({selectedEtatAdmin.justifications.length})</div>
                     {selectedEtatAdmin.justifications.map(j => (
                       <div className="ji" key={j.id}>
                         <div style={{ flex: 1 }}>
@@ -489,7 +555,20 @@ const handleFermerEtat = async (id) => {
                             <span style={{ fontFamily: "'JetBrains Mono',monospace", color: "#fbbf24", marginLeft: "auto" }}>{fmt(j.montant)}</span>
                           </div>
                           <div style={{ fontSize: 13, color: "#8a7f9a", marginBottom: 4 }}>{j.note}</div>
-                          {j.recupere && <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#4ade80" }}>Recupere le {j.dateRecuperation}</div>}
+                          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 4 }}>
+                            {j.modePaiement && (
+                              <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: j.modePaiement === "espece" ? "#4ade80" : j.modePaiement === "cheque" ? "#a78bfa" : "#fbbf24" }}>
+                                {j.modePaiement === "espece" ? "Espece" : j.modePaiement === "tpe" ? "TPE" : j.modePaiement === "virement" ? "Virement" : "Cheque"}
+                              </span>
+                            )}
+                            {j.dateEcart && <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380" }}>Date: {j.dateEcart}</span>}
+                            {j.recupere && <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#4ade80" }}>Recupere le {j.dateRecuperation}</span>}
+                          </div>
+                          {j.pieceJointe && (
+                            <a href={"http://localhost:3001/uploads/" + j.pieceJointe} target="_blank" rel="noreferrer" className="file-link" style={{ display: "inline-block", marginTop: 4 }}>
+                              📎 Voir piece jointe
+                            </a>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -501,10 +580,9 @@ const handleFermerEtat = async (id) => {
 
           {adminView === "dashboard" && (
             <div>
-              <div className="three">
+              <div className="two" style={{ marginBottom: 20 }}>
                 <div className="stat-box"><div className="stat-num" style={{ color: "#fbbf24" }}>{nbOuverts}</div><div className="stat-label">OUVERTS</div></div>
                 <div className="stat-box"><div className="stat-num" style={{ color: "#4ade80" }}>{nbFermes}</div><div className="stat-label">FERMES</div></div>
-                <div className="stat-box"><div className="stat-num" style={{ color: "#f87171" }}>{nbEcarts}</div><div className="stat-label">AVEC ECART</div></div>
               </div>
               <div className="tabs">
                 {["etats", "versements", "caisse"].map(t => (
@@ -535,7 +613,23 @@ const handleFermerEtat = async (id) => {
                         <div>
                           <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 4 }}>{e.date}</div>
                           <div style={{ fontFamily: "'JetBrains Mono',monospace", color: "#a78bfa", fontSize: 13 }}>Montant : {fmt(e.montantTotal)}</div>
-                          {e.ecarts && <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 12, marginTop: 3, color: Math.abs(e.ecarts.ecartGlobal) < 0.001 ? "#4ade80" : "#f87171" }}>Ecart : {fmt(e.ecarts.ecartGlobal)}</div>}
+                          {e.ecarts && (() => {
+                            const ecart = e.ecarts.ecartGlobal;
+                            const justifs = e.justifications || [];
+                            const totalCouvert = justifs.reduce((s, j) => {
+                              if (j.modePaiement === "espece") return s + (j.montantRecupere || 0);
+                              return s + (j.montant || 0);
+                            }, 0);
+                            const restant = Math.max(0, parseFloat((Math.abs(ecart) - totalCouvert).toFixed(3)));
+                            const isJustified = Math.abs(ecart) > 0.001 && restant < 0.001;
+                            const color = e.status === "closed" ? "#4ade80" : Math.abs(ecart) < 0.001 ? "#4ade80" : isJustified ? "#f59e0b" : "#f87171";
+                            let label;
+                            if (e.status === "closed" && Math.abs(ecart) > 0.001) label = `Écart recouvré de ${fmt(Math.abs(ecart))}`;
+                            else if (e.status === "closed") label = `Écart : ${fmt(ecart)}`;
+                            else if (isJustified) label = `Écart justifié ${fmt(ecart)} — à fermer`;
+                            else label = `Écart : ${fmt(ecart)}`;
+                            return <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 12, marginTop: 3, color }}>{label}</div>;
+                          })()}
                         </div>
                         <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, padding: "4px 12px", borderRadius: 20, background: e.status === "open" ? "#2d1a0d" : "#0d2318", color: e.status === "open" ? "#fbbf24" : "#4ade80" }}>
                           {e.status === "open" ? "EN ATTENTE" : "FERME"}
@@ -610,23 +704,49 @@ const handleFermerEtat = async (id) => {
                 <div style={{ color: "#6b6380", fontSize: 13, fontFamily: "'JetBrains Mono',monospace", padding: "12px 0" }}>Aucun ecart a recuperer</div>
               ) : ecartsARecuperer.map(e => (
                 <div key={e.justificationId} className={"recouv-item " + (selectedEcart?.justificationId === e.justificationId ? "selected" : "")}
-                  onClick={() => setSelectedEcart(e)}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  onClick={() => { setSelectedEcart(e); setMontantRecup(e.restant.toFixed(3)); setModePaiementRecup(e.modePaiement || "espece"); }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                     <div>
                       <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 2 }}>{JUST_LABELS[e.type]} — {e.etatDate}</div>
-                      <div style={{ fontSize: 12, color: "#8a7f9a" }}>{e.note}</div>
+                      <div style={{ fontSize: 12, color: "#8a7f9a", marginBottom: 2 }}>{e.note}</div>
+                      {e.modePaiement && <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: e.modePaiement === "espece" ? "#4ade80" : e.modePaiement === "cheque" ? "#a78bfa" : "#fbbf24" }}>{e.modePaiement === "espece" ? "Espece" : e.modePaiement === "cheque" ? "Cheque" : "Traite"}</div>}
+                      {e.montantDejaRecup > 0 && <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#f87171" }}>Deja recu: {fmt(e.montantDejaRecup)}</div>}
+                      {e.pieceJointe && <span style={{ fontSize: 10, color: "#a78bfa" }}>📎 PJ</span>}
                     </div>
-                    <div style={{ fontFamily: "'JetBrains Mono',monospace", color: "#fbbf24", fontWeight: 600 }}>{fmt(e.montant)}</div>
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{ fontFamily: "'JetBrains Mono',monospace", color: "#fbbf24", fontWeight: 600 }}>{fmt(e.restant)}</div>
+                      <div style={{ fontSize: 10, color: "#6b6380", fontFamily: "'JetBrains Mono',monospace" }}>restant</div>
+                    </div>
                   </div>
                 </div>
               ))}
             </div>
-            <div className="ig">
-              <label>Date de recuperation</label>
-              <input type="date" className="inp" value={dateRecup} onChange={e => setDateRecup(e.target.value)} />
+            <div className="two">
+              <div className="ig">
+                <label>Date de recuperation</label>
+                <input type="date" className="inp" value={dateRecup} onChange={e => setDateRecup(e.target.value)} />
+              </div>
+              <div className="ig">
+                <label>Mode de paiement</label>
+                <select className="inp" value={modePaiementRecup} onChange={e => setModePaiementRecup(e.target.value)}>
+                  <option value="espece">Espece</option>
+                  <option value="cheque">Cheque</option>
+                  <option value="traite">Traite</option>
+                </select>
+              </div>
             </div>
+            <div className="ig">
+              <label>Montant recupere (TND)</label>
+              <input type="number" className="inp" placeholder="0.000" step="0.001" value={montantRecup} onChange={e => setMontantRecup(e.target.value)} />
+              {selectedEcart && <div style={{ fontSize: 11, color: "#6b6380", fontFamily: "'JetBrains Mono',monospace", marginTop: 4 }}>Restant a recuperer: {fmt(selectedEcart.restant)}</div>}
+            </div>
+            {modePaiementRecup !== "espece" && (
+              <div style={{ background: "#1a1a2e", border: "1px solid #2e2a3e", borderRadius: 8, padding: "10px 14px", marginBottom: 12, fontSize: 12, fontFamily: "'JetBrains Mono',monospace", color: "#8a7f9a" }}>
+                Cheque et Traite ne s ajoutent pas a la caisse espece.
+              </div>
+            )}
             <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 16 }}>
-              <button className="btn bg" onClick={() => { setShowRecoupModal(false); setSelectedEcart(null); }}>Annuler</button>
+              <button className="btn bg" onClick={() => { setShowRecoupModal(false); setSelectedEcart(null); setMontantRecup(""); setModePaiementRecup("espece"); }}>Annuler</button>
               <button className="btn bp" onClick={handleRecouvrement} disabled={loading || !selectedEcart}>{loading ? "..." : "Confirmer"}</button>
             </div>
           </div>
@@ -657,12 +777,12 @@ const handleFermerEtat = async (id) => {
                 {etats.length === 0 ? (
                   <div className="card" style={{ textAlign: "center", padding: "40px", color: "#6b6380" }}><div style={{ fontSize: 36, marginBottom: 12 }}>📋</div><p>Aucun etat disponible</p></div>
                 ) : etats.map(e => (
-                  <div key={e.id} className={"etat-card " + (e.status === "open" ? "etat-open clickable" : "etat-closed")} onClick={() => selectEtat(e)}>
+                  <div key={e.id} className={"etat-card clickable " + (e.status === "open" ? "etat-open" : "etat-closed")} onClick={() => selectEtat(e)}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                       <div>
                         <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 4 }}>Etat du {e.date}</div>
                         <div style={{ fontFamily: "'JetBrains Mono',monospace", color: "#6b6380", fontSize: 12 }}>
-                          {e.status === "open" ? (e.finFields ? "Justifications en cours" : "Cliquez pour valider") : "Ferme"}
+                          {e.status === "open" ? (e.finFields ? "Ecarts en cours" : "Cliquez pour valider") : "Ferme"}
                         </div>
                       </div>
                       <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, padding: "4px 12px", borderRadius: 20, background: e.status === "open" ? "#2d1a0d" : "#0d2318", color: e.status === "open" ? "#fbbf24" : "#4ade80" }}>
@@ -682,7 +802,10 @@ const handleFermerEtat = async (id) => {
                   <div className="st">Etat du {selectedEtat.date}</div>
                   <div className="two">
                     {Object.keys(INITIAL_FIN).map(k => (
-                      <div className="ig" key={k}><label>{FIELD_LABELS[k]}</label><input type="number" className="inp" placeholder="0.000" step="0.001" value={finFields[k]} onChange={e => setFinFields({ ...finFields, [k]: e.target.value })} /></div>
+                      <div className="ig" key={k}>
+                        <label>{FIELD_LABELS[k]} <span style={{ fontSize: 10, color: "#6b6380" }}>({FIELD_MODES[k]})</span></label>
+                        <input type="number" className="inp" placeholder="0.000" step="0.001" value={finFields[k]} onChange={e => setFinFields({ ...finFields, [k]: e.target.value })} />
+                      </div>
                     ))}
                   </div>
                   <div style={{ background: "#1a1a2e", border: "1px solid #2e2a3e", borderRadius: 8, padding: "12px 16px", marginBottom: 16 }}>
@@ -714,7 +837,12 @@ const handleFermerEtat = async (id) => {
                   </div>
                   {Math.abs(ecartGlobal) < 0.001 && (
                     <div style={{ background: "#0d2318", border: "1px solid #16532d44", borderRadius: 8, padding: "12px 16px", color: "#4ade80", fontFamily: "'JetBrains Mono',monospace", fontSize: 13, textAlign: "center" }}>
-                      En attente de fermeture par l administrateur.
+                      {selectedEtat.finFields && Object.keys(selectedEtat.finFields).some(k => {
+                        const mode = (selectedEtat.finModes?.[k]) || FIELD_MODES[k] || "espece";
+                        return parseFloat(selectedEtat.finFields[k] || 0) !== 0 && mode !== "espece";
+                      })
+                        ? "Mode non-espece detecte. En attente de fermeture par l'administrateur."
+                        : "En attente de fermeture par l administrateur."}
                     </div>
                   )}
                 </div>
@@ -727,7 +855,7 @@ const handleFermerEtat = async (id) => {
                         <span style={{ color: "#fbbf24", fontFamily: "'JetBrains Mono',monospace", fontWeight: 600 }}>{fmt(Math.abs(ecartGlobal))}</span>
                       </div>
                       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, marginBottom: 8 }}>
-                        <span style={{ color: "#8a7f9a", fontFamily: "'JetBrains Mono',monospace" }}>Justifie</span>
+                        <span style={{ color: "#8a7f9a", fontFamily: "'JetBrains Mono',monospace" }}>Justifie ecart</span>
                         <span style={{ color: "#4ade80", fontFamily: "'JetBrains Mono',monospace", fontWeight: 600 }}>{fmt(totalJustifie)}</span>
                       </div>
                       <div className="pb"><div className="pbi" style={{ width: (Math.abs(ecartGlobal) > 0 ? Math.min(100, (totalJustifie / Math.abs(ecartGlobal)) * 100) : 0) + "%", background: restant < 0.001 ? "#22c55e" : "linear-gradient(90deg,#7c3aed,#a855f7)" }} /></div>
@@ -739,7 +867,7 @@ const handleFermerEtat = async (id) => {
                       )}
                     </div>
                     <div className="card">
-                      <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380", marginBottom: 16 }}>AJOUTER UNE JUSTIFICATION</div>
+                      <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380", marginBottom: 16 }}>AJOUTER UN ECART</div>
                       <div className="two">
                         <div className="ig"><label>Type</label>
                           <select className="inp" value={newJust.type} onChange={e => setNewJust({ ...newJust, type: e.target.value })}>
@@ -747,14 +875,43 @@ const handleFermerEtat = async (id) => {
                             {JUSTIFICATION_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
                           </select>
                         </div>
-                        <div className="ig"><label>Montant TND</label><input type="number" className="inp" placeholder="0.000" step="0.001" value={newJust.montant} onChange={e => setNewJust({ ...newJust, montant: e.target.value })} /></div>
+                        <div className="ig">
+                          <label>Mode de paiement</label>
+                          <select className="inp" value={newJust.modePaiement} onChange={e => setNewJust({ ...newJust, modePaiement: e.target.value })}>
+                            <option value="espece">Espece</option>
+                            <option value="tpe">TPE</option>
+                            <option value="virement">Virement</option>
+                            <option value="cheque">Cheque</option>
+                          </select>
+                        </div>
                       </div>
+                      <div className="two">
+                        <div className="ig"><label>Montant (TND)</label><input type="number" className="inp" placeholder="0.000" step="0.001" value={newJust.montant} onChange={e => setNewJust({ ...newJust, montant: e.target.value })} /></div>
+                        <div className="ig">
+                          <label>Date de l ecart</label>
+                          <input type="date" className="inp" value={newJust.dateEcart} onChange={e => setNewJust({ ...newJust, dateEcart: e.target.value })} />
+                        </div>
+                      </div>
+                      {/* Champ pièce jointe pour non-espece */}
+                      {newJust.modePaiement !== "espece" && (
+                        <div className="ig">
+                          <label>Pièce jointe {newJust.modePaiement === "tpe" ? "(ticket TPE)" : newJust.modePaiement === "virement" ? "(preuve virement)" : "(cheque scan)"} *</label>
+                          <input
+                            type="file"
+                            className="inp"
+                            accept="image/*,.pdf"
+                            onChange={e => setNewJust({ ...newJust, pieceJointe: e.target.files[0] })}
+                            style={{ padding: "8px" }}
+                          />
+                          {newJust.pieceJointe && <div style={{ fontSize: 12, color: "#4ade80", fontFamily: "'JetBrains Mono',monospace", marginTop: 4 }}>{newJust.pieceJointe.name}</div>}
+                        </div>
+                      )}
                       <div className="ig"><label>Note</label><textarea className="inp" rows={2} value={newJust.note} onChange={e => setNewJust({ ...newJust, note: e.target.value })} style={{ resize: "vertical" }} /></div>
                       <button className="btn bp" onClick={addJustification} disabled={loading}>{loading ? "..." : "+ Ajouter"}</button>
                     </div>
                     {justifications.length > 0 && (
                       <div className="card">
-                        <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380", marginBottom: 14 }}>JUSTIFICATIONS ({justifications.length})</div>
+                        <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380", marginBottom: 14 }}>ECARTS ({justifications.length})</div>
                         {justifications.map(j => (
                           <div className="ji" key={j.id}>
                             <div style={{ flex: 1 }}>
@@ -763,15 +920,100 @@ const handleFermerEtat = async (id) => {
                                 <span style={{ fontFamily: "'JetBrains Mono',monospace", color: "#fbbf24", marginLeft: "auto" }}>{fmt(j.montant)}</span>
                               </div>
                               <div style={{ fontSize: 13, color: "#8a7f9a", marginBottom: 4 }}>{j.note}</div>
-                              {j.recupere && <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#4ade80" }}>Recupere le {j.dateRecuperation}</div>}
+                              <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 4 }}>
+
+
+                                {j.dateEcart && <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380" }}>Ecart: {j.dateEcart}</span>}
+                                {j.dateRecuperation && <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380" }}>Recup: {j.dateRecuperation}</span>}
+                                {j.modePaiement && (
+                                  <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: j.modePaiement === "espece" ? "#4ade80" : j.modePaiement === "cheque" ? "#a78bfa" : "#fbbf24" }}>
+                                    {j.modePaiement === "espece" ? "Espece" : j.modePaiement === "tpe" ? "TPE" : j.modePaiement === "virement" ? "Virement" : "Cheque"}
+                                  </span>
+                                )}
+                                {j.modePaiement === "espece" && j.recupere && <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#4ade80" }}>+ Caisse {j.dateRecuperation}</span>}
+                              </div>
+                              {j.pieceJointe && (
+                                <a href={"http://localhost:3001/uploads/" + j.pieceJointe} target="_blank" rel="noreferrer" className="file-link" style={{ display: "inline-block", marginTop: 4 }}>
+                                  📎 Voir piece jointe
+                                </a>
+                              )}
                             </div>
-                            {!j.recupere && <button onClick={() => removeJustification(j.id)} style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: 18 }}>x</button>}
+                            <div className="locked-badge" style={{ alignSelf: "flex-start", fontSize: 10 }}>VERROUILLE</div>
                           </div>
                         ))}
                       </div>
                     )}
                   </>
                 )}
+              </div>
+            )}
+
+            {finStep === "readonly" && selectedEtat && (
+              <div>
+                <button className="btn bg" style={{ fontSize: 12, padding: "8px 14px", marginBottom: 20 }} onClick={() => { setFinStep("list"); }}>← Retour</button>
+                <div className="card">
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
+                    <div>
+                      <div className="sb">Etat ferme - Lecture seule</div>
+                      <div className="st">Etat du {selectedEtat.date}</div>
+                    </div>
+                    <div style={{ background: "#0d2318", border: "1px solid #16532d", borderRadius: 8, padding: "8px 16px", fontSize: 12, fontFamily: "'JetBrains Mono',monospace", color: "#4ade80" }}>FERME</div>
+                  </div>
+                  {selectedEtat.finFields && (
+                    <div style={{ background: "#1a1a2e", border: "1px solid #2e2a3e", borderRadius: 8, padding: "14px 18px", marginBottom: 16 }}>
+                      <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380", marginBottom: 10 }}>MONTANTS SAISIS</div>
+                      {Object.keys(FIELD_LABELS).map(k => (
+                        <div className="read-row" key={k}>
+                          <span style={{ color: "#8a7f9a" }}>{FIELD_LABELS[k]} <span style={{ fontSize: 10, color: "#6b6380" }}>({selectedEtat.finModes?.[k] || FIELD_MODES[k]})</span></span>
+                          <span style={{ fontFamily: "'JetBrains Mono',monospace" }}>{fmt(selectedEtat.finFields[k])}</span>
+                        </div>
+                      ))}
+                      <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 10, fontWeight: 700 }}>
+                        <span>Total</span>
+                        <span style={{ fontFamily: "'JetBrains Mono',monospace", color: "#a78bfa" }}>{fmt(selectedEtat.totalFin)}</span>
+                      </div>
+                    </div>
+                  )}
+                  {selectedEtat.ecarts && Math.abs(selectedEtat.ecarts.ecartGlobal) > 0.001 && (
+                    <div style={{ background: "#2d1a0d", border: "1px solid #92400e44", borderRadius: 8, padding: "14px 18px", marginBottom: 16 }}>
+                      <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380", marginBottom: 10 }}>ECART</div>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "'JetBrains Mono',monospace", fontWeight: 700, color: "#f87171" }}>
+                        <span>Ecart global</span>
+                        <span>{fmt(selectedEtat.ecarts.ecartGlobal)}</span>
+                      </div>
+                    </div>
+                  )}
+                  {selectedEtat.justifications?.length > 0 && (
+                    <div>
+                      <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380", marginBottom: 12 }}>ECARTS AJOUTES ({selectedEtat.justifications.length})</div>
+                      {selectedEtat.justifications.map(j => (
+                        <div className="ji" key={j.id} style={{ cursor: "default" }}>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                              <span style={{ fontWeight: 600, color: "#a78bfa" }}>{JUST_LABELS[j.type]}</span>
+                              <span style={{ fontFamily: "'JetBrains Mono',monospace", color: "#fbbf24", marginLeft: "auto" }}>{fmt(j.montant)}</span>
+                            </div>
+                            <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                              {j.dateEcart && <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380" }}>Date ecart: {j.dateEcart}</span>}
+                              {j.dateRecuperation && <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380" }}>Recupere: {j.dateRecuperation}</span>}
+                              {j.modePaiement && (
+                                <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: j.modePaiement === "espece" ? "#4ade80" : j.modePaiement === "cheque" ? "#a78bfa" : "#fbbf24" }}>
+                                  {j.modePaiement === "espece" ? "Espece" : j.modePaiement === "tpe" ? "TPE" : j.modePaiement === "virement" ? "Virement" : "Cheque"}
+                                </span>
+                              )}
+                            </div>
+                            {j.pieceJointe && (
+                              <a href={"http://localhost:3001/uploads/" + j.pieceJointe} target="_blank" rel="noreferrer" className="file-link" style={{ display: "inline-block", marginTop: 4 }}>
+                                📎 Voir piece jointe
+                              </a>
+                            )}
+                          </div>
+                          <div className="locked-badge" style={{ alignSelf: "flex-start", fontSize: 10 }}>VERROUILLE</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -879,5 +1121,7 @@ const handleFermerEtat = async (id) => {
         )}
       </div>
     </div>
+  
   );
-}
+
+  }
