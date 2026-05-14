@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 
-const API = "http://localhost:3001/api";
+const API = "http://137.74.42.45:3001/api";
 
 const USERS = {
   admin: { email: "admin@boutique.com", password: "admin123", role: "admin" },
@@ -565,7 +565,7 @@ export default function App() {
                             {j.recupere && <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#4ade80" }}>Recupere le {j.dateRecuperation}</span>}
                           </div>
                           {j.pieceJointe && (
-                            <a href={"http://localhost:3001/uploads/" + j.pieceJointe} target="_blank" rel="noreferrer" className="file-link" style={{ display: "inline-block", marginTop: 4 }}>
+                            <a href={"http://137.74.42.45:3001/uploads/" + j.pieceJointe} target="_blank" rel="noreferrer" className="file-link" style={{ display: "inline-block", marginTop: 4 }}>
                               📎 Voir piece jointe
                             </a>
                           )}
@@ -652,7 +652,7 @@ export default function App() {
                           <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 4 }}>{v.date}</div>
                           <div style={{ fontFamily: "'JetBrains Mono',monospace", color: "#a78bfa", fontSize: 14, marginBottom: 4 }}>{fmt(v.montant)}</div>
                           {v.note && <div style={{ fontSize: 13, color: "#8a7f9a", marginBottom: 4 }}>{v.note}</div>}
-                          {v.pieceJointe && <a href={"http://localhost:3001/uploads/" + v.pieceJointe} target="_blank" rel="noreferrer" className="file-link">Voir piece jointe</a>}
+                          {v.pieceJointe && <a href={"http://137.74.42.45:3001/uploads/" + v.pieceJointe} target="_blank" rel="noreferrer" className="file-link">Voir piece jointe</a>}
                         </div>
                         <div className="locked-badge">VERROUILLE</div>
                       </div>
@@ -933,7 +933,7 @@ export default function App() {
                                 {j.modePaiement === "espece" && j.recupere && <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#4ade80" }}>+ Caisse {j.dateRecuperation}</span>}
                               </div>
                               {j.pieceJointe && (
-                                <a href={"http://localhost:3001/uploads/" + j.pieceJointe} target="_blank" rel="noreferrer" className="file-link" style={{ display: "inline-block", marginTop: 4 }}>
+                                <a href={"http://137.74.42.45:3001/uploads/" + j.pieceJointe} target="_blank" rel="noreferrer" className="file-link" style={{ display: "inline-block", marginTop: 4 }}>
                                   📎 Voir piece jointe
                                 </a>
                               )}
@@ -1003,7 +1003,7 @@ export default function App() {
                               )}
                             </div>
                             {j.pieceJointe && (
-                              <a href={"http://localhost:3001/uploads/" + j.pieceJointe} target="_blank" rel="noreferrer" className="file-link" style={{ display: "inline-block", marginTop: 4 }}>
+                              <a href={"http://137.74.42.45:3001/uploads/" + j.pieceJointe} target="_blank" rel="noreferrer" className="file-link" style={{ display: "inline-block", marginTop: 4 }}>
                                 📎 Voir piece jointe
                               </a>
                             )}
@@ -1051,7 +1051,7 @@ export default function App() {
                         <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 4 }}>{v.date}</div>
                         <div style={{ fontFamily: "'JetBrains Mono',monospace", color: "#a78bfa", fontSize: 14, marginBottom: 4 }}>{fmt(v.montant)}</div>
                         {v.note && <div style={{ fontSize: 13, color: "#8a7f9a", marginBottom: 4 }}>{v.note}</div>}
-                        {v.pieceJointe && <a href={"http://localhost:3001/uploads/" + v.pieceJointe} target="_blank" rel="noreferrer" className="file-link">Voir piece jointe</a>}
+                        {v.pieceJointe && <a href={"http://137.74.42.45:3001/uploads/" + v.pieceJointe} target="_blank" rel="noreferrer" className="file-link">Voir piece jointe</a>}
                       </div>
                       <div className="locked-badge">VERROUILLE</div>
                     </div>
