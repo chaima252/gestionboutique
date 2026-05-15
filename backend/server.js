@@ -226,13 +226,20 @@ function calculerCaisse(date) {
   const recouvrements = getRecouvrements();
 
   const etatDuJour = etats.find(e => e.date === date && e.finFields);
-  const totalEtatJour = etatDuJour ? parseFloat(etatDuJour.totalFin || 0) : 0;
+ 
+  //change
+  const CHAMPS_ESPECE = ["espece", "paiementLivraison"];
+  const totalEtatJour = etatDuJour?.finFields
+  ? CHAMPS_ESPECE.reduce((s, k) => s + parseFloat(etatDuJour.finFields[k] || 0), 0)
+  : 0;
+//
 
   const versementsDuJour = versements.filter(v => v.date === date);
   const totalVerse = versementsDuJour.reduce((s, v) => s + v.montant, 0);
 
-  const recouvDuJour = recouvrements.filter(r => r.dateRecuperation === date);
-  const totalRecouv = recouvDuJour.reduce((s, r) => s + r.montant, 0);
+ //change 
+ const recouvDuJour = recouvrements.filter(r => r.dateRecuperation === date && r.modePaiement === "espece");
+ const totalRecouv = recouvDuJour.reduce((s, r) => s + r.montant, 0);
 
   const caisseCourante = caisses.find(c => c.date === date);
   const depenses = caisseCourante ? parseFloat(caisseCourante.depenses || 0) : 0;
@@ -551,7 +558,14 @@ app.post("/api/caisses", (req, res) => {
   const initial = caissesAvant.length > 0 ? caissesAvant[caissesAvant.length - 1].reste : 0;
 
   const etatDuJour = etats.find(e => e.date === date && e.finFields);
-  const totalEtatJour = etatDuJour ? parseFloat(etatDuJour.totalFin || 0) : 0;
+  
+  //change
+  const CHAMPS_ESPECE = ["espece", "paiementLivraison"];
+  const totalEtatJour = etatDuJour?.finFields
+  ? CHAMPS_ESPECE.reduce((s, k) => s + parseFloat(etatDuJour.finFields[k] || 0), 0)
+  : 0;
+  
+
   const totalVerse = versements.filter(v => v.date === date).reduce((s, v) => s + v.montant, 0);
   const totalRecouv = recouvrements.filter(r => r.dateRecuperation === date).reduce((s, r) => s + r.montant, 0);
   const solde = parseFloat((initial + totalEtatJour + totalRecouv - totalVerse - depensesVal).toFixed(3));
@@ -583,8 +597,11 @@ app.get("/api/caisses/preview/:date", (req, res) => {
   const initial = caissesAvant.length > 0 ? caissesAvant[caissesAvant.length - 1].reste : 0;
 
   const etatDuJour = etats.find(e => e.date === date && e.finFields);
-  const totalEtatJour = etatDuJour ? parseFloat(etatDuJour.totalFin || 0) : 0;
-
+  //change
+  const CHAMPS_ESPECE = ["espece", "paiementLivraison"];
+  const totalEtatJour = etatDuJour?.finFields
+    ? CHAMPS_ESPECE.reduce((s, k) => s + parseFloat(etatDuJour.finFields[k] || 0), 0)
+    : 0;
   const totalVerse = versements.filter(v => v.date === date).reduce((s, v) => s + v.montant, 0);
 
   const recouvEspece = recouvrements.filter(r => {
