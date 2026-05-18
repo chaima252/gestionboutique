@@ -412,21 +412,15 @@ export default function App() {
       {toast && <div className="toast" style={{ background: toast.color }}>{toast.msg}</div>}
       <div className="login-wrap">
         <div className="login-card">
-          <div style={{ textAlign: "center", marginBottom: 32 }}>
+          <div style={{ textAlign: "center", marginBottom: 40 }}>
             <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#5a5070", letterSpacing: "0.2em", marginBottom: 8 }}>SYSTEME DE GESTION</div>
-            <h1 style={{ fontSize: 30, fontWeight: 700, background: "linear-gradient(135deg,#e8e0d0,#a78bfa)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>Boutique</h1>
+            <h1 style={{ fontSize: 30, fontWeight: 700, background: "linear-gradient(135deg,#e8e0d0,#a78bfa)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>BOUTIQUE</h1>
           </div>
           <div className="ig"><label>Email</label><input className="inp" type="email" placeholder="votre@email.com" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} onKeyDown={e => e.key === "Enter" && handleLogin()} /></div>
           <div className="ig"><label>Mot de passe</label><input className="inp" type="password" placeholder="••••••••" value={loginPass} onChange={e => setLoginPass(e.target.value)} onKeyDown={e => e.key === "Enter" && handleLogin()} /></div>
           {loginError && <div style={{ background: "#2d0d0d", border: "1px solid #7f1d1d44", borderRadius: 6, padding: "10px 14px", fontSize: 13, color: "#f87171", fontFamily: "'JetBrains Mono',monospace", marginBottom: 16 }}>{loginError}</div>}
           <button className="btn bp" style={{ width: "100%" }} onClick={handleLogin}>Se connecter</button>
-          <div style={{ marginTop: 20, background: "#1a1a2e", borderRadius: 8, padding: "14px 16px" }}>
-            <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380", marginBottom: 8 }}>COMPTES DE TEST</div>
-            <div style={{ fontSize: 12, fontFamily: "'JetBrains Mono',monospace", color: "#8a7f9a", lineHeight: 2.2 }}>
-              <span style={{ color: "#a78bfa" }}>Admin :</span> admin@boutique.com / admin123<br />
-              <span style={{ color: "#4ade80" }}>Financier :</span> financier@boutique.com / fin123
-            </div>
-          </div>
+      
         </div>
       </div>
     </div>
