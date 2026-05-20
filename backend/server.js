@@ -225,8 +225,8 @@ function calculerCaisse(date) {
   const versements = getVersements();
   const recouvrements = getRecouvrements();
 
-  const etatDuJour = etats.find(e => e.date === date && e.finFields);
- 
+const dateJ1 = new Date(new Date(date).getTime() - 86400000).toISOString().slice(0, 10);
+const etatDuJour = etats.find(e => e.date === dateJ1 && e.finFields); 
   //change
   const CHAMPS_ESPECE = ["espece", "paiementLivraison"];
   const totalEtatJour = etatDuJour?.finFields
@@ -251,7 +251,10 @@ function calculerCaisse(date) {
 // ═══════════════════════════════
 //  ETATS DE VENTE
 // ═══════════════════════════════
-app.get("/api/etats", (req, res) => res.json(getEtats()));
+app.get("/api/etats", (req, res) => {
+  const etats = getEtats();
+  res.json([...etats].sort((a, b) => b.date.localeCompare(a.date)));
+});
 
 app.post("/api/etats", (req, res) => {
   const { date, montantTotal } = req.body;
@@ -557,8 +560,8 @@ app.post("/api/caisses", (req, res) => {
   const caissesAvant = caissesTriees.filter(c => c.date < date);
   const initial = caissesAvant.length > 0 ? caissesAvant[caissesAvant.length - 1].reste : 0;
 
-  const etatDuJour = etats.find(e => e.date === date && e.finFields);
-  
+const dateJ1 = new Date(new Date(date).getTime() - 86400000).toISOString().slice(0, 10);
+const etatDuJour = etats.find(e => e.date === dateJ1 && e.finFields);  
   //change
   const CHAMPS_ESPECE = ["espece", "paiementLivraison"];
   const totalEtatJour = etatDuJour?.finFields
@@ -596,7 +599,9 @@ app.get("/api/caisses/preview/:date", (req, res) => {
   const caissesAvant = caissesTriees.filter(c => c.date < date);
   const initial = caissesAvant.length > 0 ? caissesAvant[caissesAvant.length - 1].reste : 0;
 
-  const etatDuJour = etats.find(e => e.date === date && e.finFields);
+const dateJ1 = new Date(new Date(date).getTime() - 86400000).toISOString().slice(0, 10);
+const etatDuJour = etats.find(e => e.date === dateJ1 && e.finFields);
+
   //change
   const CHAMPS_ESPECE = ["espece", "paiementLivraison"];
   const totalEtatJour = etatDuJour?.finFields
