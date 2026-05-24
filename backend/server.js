@@ -190,27 +190,32 @@ async function sendNotification(etat, heures) {
       subject: `Etat du ${etat.date} ouvert depuis ${heures}h`,
       html: `<div style="font-family:monospace;padding:20px;background:#0f1117;color:#e8e0d0;">
         <h2 style="color:#fbbf24;">Etat ouvert depuis ${heures}h</h2>
-        <p>L etat du <strong>${etat.date}</strong> n est toujours pas ferme.</p>
+        <p>L'état du <strong>${etat.date}</strong> n'est toujours pas fermé.</p>
       </div>`,
     });
   } catch (err) { console.error("Erreur email:", err.message); }
 }
 
-setInterval(() => {
+setInterval(async () => {
   const now = Date.now();
   const etats = getEtats();
-  etats.forEach(e => {
-    if (e.status !== "open") return;
+  for (const e of etats) {
+    if (e.status !== "open") continue;
     const heures = Math.floor((now - e.openedAt) / 3600000);
     if (heures >= 24) {
       const depuisNotif = now - (e.lastNotifiedAt || 0);
       if (!e.lastNotifiedAt || depuisNotif >= 6 * 3600000) {
-        sendNotification(e, heures);
+        try {
+          await sendNotification(e, heures);
+          console.log("Email envoyé pour état " + e.date);
+        } catch (err) {
+          console.error("Erreur envoi email:", err.message);
+        }
         e.lastNotifiedAt = now;
         saveEtat(e);
       }
     }
-  });
+  }
 }, 3600000);
 
 // ─── Calcul automatique caisse pour une date ───
