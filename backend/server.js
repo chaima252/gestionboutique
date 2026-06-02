@@ -22,7 +22,6 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// Modes de paiement par défaut pour chaque champ financier
 const FIELD_MODES = {
   banque: "virement",
   tpe: "tpe",
@@ -49,7 +48,7 @@ db.exec(`
     finModes TEXT,
     ecarts TEXT,
     totalFin REAL,
-    justifications TEXT DEFAULT '[]',
+    lignesEcart TEXT DEFAULT '[]',
     status TEXT DEFAULT 'open',
     openedAt INTEGER,
     closedAt INTEGER,
@@ -80,45 +79,42 @@ db.exec(`
     createdAt INTEGER,
     locked INTEGER DEFAULT 1
   );
-
-  CREATE TABLE IF NOT EXISTS recouvrements (
-    id TEXT PRIMARY KEY,
-    etatId TEXT NOT NULL,
-    justificationId TEXT NOT NULL,
-    dateRecuperation TEXT NOT NULL,
-    montant REAL NOT NULL,
-    modePaiement TEXT DEFAULT 'espece',
-    createdAt INTEGER
-  );
 `);
+
+// Migration: si ancienne colonne "justifications" existe encore, on migre
+try {
+  const cols = db.prepare("PRAGMA table_info(etats)").all().map(c => c.name);
+  if (cols.includes("justifications") && !cols.includes("lignesEcart")) {
+    db.exec(`ALTER TABLE etats ADD COLUMN lignesEcart TEXT DEFAULT '[]'`);
+    console.log("Migration: colonne lignesEcart ajoutée");
+  }
+} catch (e) { /* déjà fait */ }
 
 // ─── Helpers SQLite ───
 function getEtats() {
-  return db.prepare("SELECT * FROM etats").all().map(e => ({
-    ...e,
-    finFields: e.finFields ? JSON.parse(e.finFields) : null,
-    finModes: e.finModes ? JSON.parse(e.finModes) : null,
-    ecarts: e.ecarts ? JSON.parse(e.ecarts) : null,
-    justifications: e.justifications ? JSON.parse(e.justifications) : [],
-  }));
+  return db.prepare("SELECT * FROM etats").all().map(parseEtat);
 }
 
-function getEtatById(id) {
-  const e = db.prepare("SELECT * FROM etats WHERE id = ?").get(id);
-  if (!e) return null;
+function parseEtat(e) {
   return {
     ...e,
     finFields: e.finFields ? JSON.parse(e.finFields) : null,
     finModes: e.finModes ? JSON.parse(e.finModes) : null,
     ecarts: e.ecarts ? JSON.parse(e.ecarts) : null,
-    justifications: e.justifications ? JSON.parse(e.justifications) : [],
+    lignesEcart: e.lignesEcart ? JSON.parse(e.lignesEcart) : [],
   };
+}
+
+function getEtatById(id) {
+  const e = db.prepare("SELECT * FROM etats WHERE id = ?").get(id);
+  if (!e) return null;
+  return parseEtat(e);
 }
 
 function saveEtat(etat) {
   db.prepare(`
     INSERT OR REPLACE INTO etats
-    (id, date, montantTotal, finFields, finModes, ecarts, totalFin, justifications, status, openedAt, closedAt, lastNotifiedAt)
+    (id, date, montantTotal, finFields, finModes, ecarts, totalFin, lignesEcart, status, openedAt, closedAt, lastNotifiedAt)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     etat.id, etat.date, etat.montantTotal,
@@ -126,7 +122,7 @@ function saveEtat(etat) {
     etat.finModes ? JSON.stringify(etat.finModes) : null,
     etat.ecarts ? JSON.stringify(etat.ecarts) : null,
     etat.totalFin ?? null,
-    JSON.stringify(etat.justifications || []),
+    JSON.stringify(etat.lignesEcart || []),
     etat.status, etat.openedAt, etat.closedAt ?? null, etat.lastNotifiedAt ?? 0
   );
 }
@@ -153,17 +149,6 @@ function saveCaisse(c) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(c.id, c.date, c.initial, c.totalEtatJour, c.totalVerse, c.totalRecouv,
     c.depenses, c.solde, c.reste, c.note, c.createdAt, c.locked ? 1 : 0);
-}
-
-function getRecouvrements() {
-  return db.prepare("SELECT * FROM recouvrements").all();
-}
-
-function saveRecouvrement(r) {
-  db.prepare(`
-    INSERT OR REPLACE INTO recouvrements (id, etatId, justificationId, dateRecuperation, montant, modePaiement, createdAt)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(r.id, r.etatId, r.justificationId, r.dateRecuperation, r.montant, r.modePaiement || 'espece', r.createdAt);
 }
 
 // ═══════════════════════════════
@@ -202,12 +187,15 @@ setInterval(async () => {
   for (const e of etats) {
     if (e.status !== "open") continue;
     const heures = Math.floor((now - e.openedAt) / 3600000);
-    if (heures >= 24) {
+    
+    // Nouvelle logique: premier email à 48h, puis tous les 24h
+    if (heures >= 48) {
       const depuisNotif = now - (e.lastNotifiedAt || 0);
-      if (!e.lastNotifiedAt || depuisNotif >= 6 * 3600000) {
+      // Premier envoi ou dernier envoi il y a plus de 24h
+      if (!e.lastNotifiedAt || depuisNotif >= 24 * 3600000) {
         try {
           await sendNotification(e, heures);
-          console.log("Email envoyé pour état " + e.date);
+          console.log("Email envoyé pour état " + e.date + " (ouvert depuis " + heures + "h)");
         } catch (err) {
           console.error("Erreur envoi email:", err.message);
         }
@@ -228,29 +216,49 @@ function calculerCaisse(date) {
 
   const etats = getEtats();
   const versements = getVersements();
-  const recouvrements = getRecouvrements();
 
-const dateJ1 = new Date(new Date(date).getTime() - 86400000).toISOString().slice(0, 10);
-const etatDuJour = etats.find(e => e.date === dateJ1 && e.finFields); 
-  //change
+  const dateJ1 = new Date(new Date(date).getTime() - 86400000).toISOString().slice(0, 10);
+  const etatDuJour = etats.find(e => e.date === dateJ1 && e.finFields);
   const CHAMPS_ESPECE = ["espece", "paiementLivraison"];
   const totalEtatJour = etatDuJour?.finFields
-  ? CHAMPS_ESPECE.reduce((s, k) => s + parseFloat(etatDuJour.finFields[k] || 0), 0)
-  : 0;
-//
+    ? CHAMPS_ESPECE.reduce((s, k) => s + parseFloat(etatDuJour.finFields[k] || 0), 0)
+    : 0;
+
+  // Lignes d'écart "payé en espece" récupérées à cette date
+  const totalRecouv = etats.reduce((sum, etat) => {
+    return sum + (etat.lignesEcart || []).reduce((s, l) => {
+      if (l.statut === "paye" && l.datePaiement === date && l.modePaiement === "espece") {
+        return s + (l.montant || 0);
+      }
+      return s;
+    }, 0);
+  }, 0);
 
   const versementsDuJour = versements.filter(v => v.date === date);
   const totalVerse = versementsDuJour.reduce((s, v) => s + v.montant, 0);
-
- //change 
- const recouvDuJour = recouvrements.filter(r => r.dateRecuperation === date && r.modePaiement === "espece");
- const totalRecouv = recouvDuJour.reduce((s, r) => s + r.montant, 0);
 
   const caisseCourante = caisses.find(c => c.date === date);
   const depenses = caisseCourante ? parseFloat(caisseCourante.depenses || 0) : 0;
 
   const solde = parseFloat((initial + totalEtatJour + totalRecouv - totalVerse - depenses).toFixed(3));
   return { initial, totalEtatJour, totalVerse, totalRecouv, depenses, solde, reste: solde };
+}
+
+// ─── Helper: vérifier si un état peut être fermé ───
+function etatPeutEtreFerme(etat) {
+  if (!etat.finFields) return false;
+  const ecart = Math.abs(etat.ecarts?.ecartGlobal || 0);
+  if (ecart < 0.001) return true; // pas d'écart
+
+  const lignes = etat.lignesEcart || [];
+  if (lignes.length === 0) return false;
+
+  // Toutes les lignes doivent être "paye" ou "manque" (manque = accepté et acté)
+  const toutesTraitees = lignes.every(l => l.statut === "paye" || l.statut === "manque");
+  const totalLignes = lignes.reduce((s, l) => s + (l.montant || 0), 0);
+  const ecartCouvert = totalLignes >= ecart - 0.001;
+
+  return toutesTraitees && ecartCouvert;
 }
 
 // ═══════════════════════════════
@@ -273,7 +281,7 @@ app.post("/api/etats", (req, res) => {
     id: Date.now().toString(), date,
     montantTotal: parseFloat(montantTotal),
     finFields: null, finModes: null, ecarts: null, totalFin: null,
-    justifications: [],
+    lignesEcart: [],
     status: "open",
     openedAt: Date.now(), closedAt: null, lastNotifiedAt: 0,
   };
@@ -281,6 +289,7 @@ app.post("/api/etats", (req, res) => {
   res.status(201).json(etat);
 });
 
+// Valider (financier saisit ses montants)
 app.put("/api/etats/:id/valider", (req, res) => {
   const etat = getEtatById(req.params.id);
   if (!etat) return res.status(404).json({ error: "Introuvable" });
@@ -295,7 +304,7 @@ app.put("/api/etats/:id/valider", (req, res) => {
   const ecartGlobal = parseFloat((totalFin - etat.montantTotal).toFixed(3));
   etat.ecarts = { ecartGlobal };
 
-  // Vérifier si tous les montants non-nuls sont en espece
+  // Fermeture auto si écart = 0 ET tout espece
   const modes = finModes || {};
   const hasNonZeroNonEspece = Object.keys(finFields).some(k => {
     const val = parseFloat(finFields[k] || 0);
@@ -303,7 +312,6 @@ app.put("/api/etats/:id/valider", (req, res) => {
     return val !== 0 && mode !== "espece";
   });
 
-  // Fermeture auto UNIQUEMENT si écart = 0 ET tout est en espece
   if (Math.abs(ecartGlobal) < 0.001 && !hasNonZeroNonEspece) {
     etat.status = "closed";
     etat.closedAt = Date.now();
@@ -316,202 +324,116 @@ app.put("/api/etats/:id/valider", (req, res) => {
   res.json(etat);
 });
 
-app.post("/api/etats/:id/justifications", upload.single("pieceJointe"), (req, res) => {
+// ─── LIGNES D'ÉCART ───
+
+// Ajouter une ligne d'écart (financier)
+app.post("/api/etats/:id/lignes-ecart", (req, res) => {
   const etat = getEtatById(req.params.id);
   if (!etat) return res.status(404).json({ error: "Introuvable" });
+  if (etat.status === "closed") return res.status(400).json({ error: "Etat ferme" });
+  if (!etat.finFields) return res.status(400).json({ error: "Valider d'abord les montants" });
 
-  const { type, montant, note, dateEcart, modePaiement } = req.body;
-  const justId = Date.now().toString();
-  const montantVal = parseFloat(montant);
-  const modeVal = modePaiement || "espece";
-  const dateEcartVal = dateEcart || etat.date;
-  const today = new Date().toISOString().slice(0, 10);
+  const { client, montant, note } = req.body;
+  if (!client || !montant) return res.status(400).json({ error: "Client et montant obligatoires" });
 
-  // Pièce jointe obligatoire pour non-espece
-  if (modeVal !== "espece" && !req.file) {
-    return res.status(400).json({ error: "Piece jointe obligatoire pour TPE/Virement/Cheque" });
-  }
-
-  // Ajouter la justification
-  etat.justifications.push({
-    id: justId,
-    type,
-    montant: montantVal,
+  const ligne = {
+    id: Date.now().toString(),
+    client: client.trim(),
+    montant: parseFloat(montant),
     note: note || "",
-    dateEcart: dateEcartVal,
-    modePaiement: modeVal,
-    pieceJointe: req.file ? req.file.filename : null,
-    montantRecupere: 0,
-    recupere: false,
-    dateRecuperation: null,
-  });
+    statut: "a_voir", // "a_voir" | "manque" | "paye"
+    modePaiement: null,
+    datePaiement: null,
+    createdAt: Date.now(),
+  };
 
-  // Si mode espece → recouvrement auto + caisse + fermeture auto possible
-  if (modeVal === "espece") {
-    const recouvrement = {
-      id: (Date.now() + 1).toString(),
-      etatId: etat.id,
-      justificationId: justId,
-      dateRecuperation: today,
-      montant: montantVal,
-      modePaiement: "espece",
-      createdAt: Date.now(),
-    };
-    saveRecouvrement(recouvrement);
+  etat.lignesEcart.push(ligne);
+  saveEtat(etat);
+  res.json(etat);
+});
 
-    // Marquer comme recupere
-    const just = etat.justifications.find(j => j.id === justId);
-    just.montantRecupere = montantVal;
-    just.recupere = true;
-    just.dateRecuperation = today;
+// Modifier le statut d'une ligne (financier ou admin)
+app.put("/api/etats/:id/lignes-ecart/:lid", (req, res) => {
+  const etat = getEtatById(req.params.id);
+  if (!etat) return res.status(404).json({ error: "Introuvable" });
+  if (etat.status === "closed") return res.status(400).json({ error: "Etat ferme" });
 
-    // Mettre à jour caisse
+  const ligne = etat.lignesEcart.find(l => l.id === req.params.lid);
+  if (!ligne) return res.status(404).json({ error: "Ligne introuvable" });
+
+  const { statut, modePaiement, datePaiement } = req.body;
+  if (!["a_voir", "manque", "paye"].includes(statut))
+    return res.status(400).json({ error: "Statut invalide" });
+
+  ligne.statut = statut;
+
+if (statut === "paye") {
+  ligne.modePaiement = modePaiement || "espece";
+  const datePaiementOriginale = datePaiement || new Date().toISOString().slice(0, 10);
+  
+  // Pour paiement en espèce : la caisse est mise à jour le LENDEMAIN
+  if (ligne.modePaiement === "espece") {
+    // Calculer la date du lendemain
+    const dateObj = new Date(datePaiementOriginale);
+    dateObj.setDate(dateObj.getDate() + 1);
+    const lendemain = dateObj.toISOString().slice(0, 10);
+    ligne.datePaiement = lendemain;
+    
+    // Mettre à jour la caisse du lendemain
     const caisses = getCaisses();
-    const caisseDuJour = caisses.find(c => c.date === today);
-    if (caisseDuJour) {
-      const calc = calculerCaisse(today);
-      saveCaisse({ ...caisseDuJour, ...calc });
+    const caisseDuLendemain = caisses.find(c => c.date === lendemain);
+    if (caisseDuLendemain) {
+      const calc = calculerCaisse(lendemain);
+      saveCaisse({ ...caisseDuLendemain, ...calc });
     }
-
-    // Fermeture auto si tout est recupere ET tout est en espece
-    const tousRecuperes = etat.justifications.every(j => j.recupere);
-    const tousEspece = etat.justifications.every(j => j.modePaiement === "espece");
-    const ecart = Math.abs(etat.ecarts?.ecartGlobal || 0);
-    const totalCouvert = etat.justifications.reduce((s, j) => s + j.montant, 0);
-
-    if (tousRecuperes && tousEspece && ecart > 0.001 && totalCouvert >= ecart - 0.001) {
-      etat.status = "closed";
-      etat.closedAt = Date.now();
-      etat.ecarts = { ecartGlobal: 0 };
-      etat.totalFin = etat.montantTotal;
-      console.log("Etat ferme auto (tout espece + ecart couvert): " + etat.id);
-    }
+  } else {
+    ligne.modePaiement = null;
+    ligne.datePaiement = null;
   }
+}
 
   saveEtat(etat);
   res.json(etat);
 });
 
-app.delete("/api/etats/:id/justifications/:jid", (req, res) => {
-  return res.status(403).json({ error: "Les ecarts sont verrouilles et ne peuvent pas etre supprimes." });
+// Supprimer une ligne (seulement si statut "a_voir")
+app.delete("/api/etats/:id/lignes-ecart/:lid", (req, res) => {
+  const etat = getEtatById(req.params.id);
+  if (!etat) return res.status(404).json({ error: "Introuvable" });
+  if (etat.status === "closed") return res.status(400).json({ error: "Etat ferme" });
+
+  const idx = etat.lignesEcart.findIndex(l => l.id === req.params.lid);
+  if (idx === -1) return res.status(404).json({ error: "Ligne introuvable" });
+  if (etat.lignesEcart[idx].statut !== "a_voir")
+    return res.status(400).json({ error: "Seules les lignes 'A voir' peuvent être supprimées" });
+
+  etat.lignesEcart.splice(idx, 1);
+  saveEtat(etat);
+  res.json(etat);
 });
 
+// Fermer un état (admin)
 app.put("/api/etats/:id/fermer", (req, res) => {
   const etat = getEtatById(req.params.id);
   if (!etat) return res.status(404).json({ error: "Introuvable" });
   if (!etat.finFields) return res.status(400).json({ error: "Etat pas encore validé par le financier." });
 
-  const ecart = etat.ecarts?.ecartGlobal || 0;
-  const totalJustifie = etat.justifications.reduce((s, j) => s + j.montant, 0);
-  const restant = parseFloat((Math.abs(ecart) - totalJustifie).toFixed(3));
+  if (!etatPeutEtreFerme(etat)) {
+    const ecart = Math.abs(etat.ecarts?.ecartGlobal || 0);
+    const lignes = etat.lignesEcart || [];
+    const totalLignes = lignes.reduce((s, l) => s + (l.montant || 0), 0);
+    const nonTraitees = lignes.filter(l => l.statut === "a_voir").length;
 
-  if (restant > 0.001)
-    return res.status(400).json({
-      error: "Écart de " + restant.toFixed(3) + " TND non justifié. Fermeture impossible."
-    });
+    if (totalLignes < ecart - 0.001)
+      return res.status(400).json({ error: `Ecart de ${(ecart - totalLignes).toFixed(3)} TND non couvert par les lignes.` });
+    if (nonTraitees > 0)
+      return res.status(400).json({ error: `${nonTraitees} ligne(s) encore en statut "A voir". Changez leur statut avant de fermer.` });
+  }
 
   etat.status = "closed";
   etat.closedAt = Date.now();
   saveEtat(etat);
   res.json(etat);
-});
-
-// ═══════════════════════════════
-//  RECOUVREMENTS
-// ═══════════════════════════════
-app.get("/api/recouvrements", (req, res) => {
-  const recouvrements = getRecouvrements();
-  const etats = getEtats();
-  const enriched = recouvrements.map(r => {
-    const etat = etats.find(e => e.id === r.etatId);
-    const just = etat?.justifications.find(j => j.id === r.justificationId);
-    return { ...r, etatDate: etat?.date, justType: just?.type, justNote: just?.note, justPieceJointe: just?.pieceJointe };
-  });
-  res.json(enriched);
-});
-
-app.get("/api/ecarts-a-recuperer", (req, res) => {
-  const etats = getEtats();
-  const recouvrements = getRecouvrements();
-  const result = [];
-  etats.forEach(etat => {
-    etat.justifications.forEach(j => {
-      if (j.recupere) return;
-      const recouvs = recouvrements.filter(r => r.justificationId === j.id);
-      const montantDejaRecup = recouvs.reduce((s, r) => s + r.montant, 0);
-      const restant = parseFloat((j.montant - montantDejaRecup).toFixed(3));
-      if (restant > 0.001) {
-        result.push({
-          etatId: etat.id, etatDate: etat.date,
-          justificationId: j.id, type: j.type,
-          montant: j.montant,
-          montantDejaRecup,
-          restant,
-          note: j.note,
-          dateEcart: j.dateEcart,
-          modePaiement: j.modePaiement,
-          pieceJointe: j.pieceJointe,
-        });
-      }
-    });
-  });
-  res.json(result);
-});
-
-app.post("/api/recouvrements", (req, res) => {
-  const { etatId, justificationId, dateRecuperation, montant, modePaiement } = req.body;
-  if (!etatId || !justificationId || !dateRecuperation || !montant)
-    return res.status(400).json({ error: "Manque donnees" });
-
-  const etat = getEtatById(etatId);
-  if (!etat) return res.status(404).json({ error: "Etat introuvable" });
-  const just = etat.justifications.find(j => j.id === justificationId);
-  if (!just) return res.status(404).json({ error: "Justification introuvable" });
-  if (just.recupere) return res.status(400).json({ error: "Deja entierement recupere" });
-
-  const montantRecup = parseFloat(montant);
-  const recouvrements = getRecouvrements();
-
-  const montantDejaRecup = recouvrements.filter(r => r.justificationId === justificationId).reduce((s, r) => s + r.montant, 0);
-  const restant = parseFloat((just.montant - montantDejaRecup).toFixed(3));
-  if (montantRecup > restant + 0.001)
-    return res.status(400).json({ error: "Montant depasse le restant de " + restant.toFixed(3) + " TND" });
-
-  const recouvrement = {
-    id: Date.now().toString(),
-    etatId, justificationId, dateRecuperation,
-    montant: montantRecup,
-    modePaiement: modePaiement || "espece",
-    createdAt: Date.now(),
-  };
-  saveRecouvrement(recouvrement);
-
-  just.montantRecupere = parseFloat((montantDejaRecup + montantRecup).toFixed(3));
-
-  if (Math.abs(just.montantRecupere - just.montant) < 0.001) {
-    just.recupere = true;
-    just.dateRecuperation = dateRecuperation;
-  }
-  saveEtat(etat);
-
-  const tousRecuperes = etat.justifications.every(j => j.recupere);
-  if (tousRecuperes && etat.status === "open") {
-    etat.status = "closed";
-    etat.closedAt = Date.now();
-    saveEtat(etat);
-    console.log("Etat ferme automatiquement (tous ecarts recuperes): " + etat.id);
-  }
-
-  if ((modePaiement || "espece") === "espece") {
-    const caisses = getCaisses();
-    const caisseDuJour = caisses.find(c => c.date === dateRecuperation);
-    if (caisseDuJour) {
-      const calc = calculerCaisse(dateRecuperation);
-      saveCaisse({ ...caisseDuJour, ...calc });
-    }
-  }
-
-  res.status(201).json({ recouvrement, etat });
 });
 
 // ═══════════════════════════════
@@ -559,23 +481,30 @@ app.post("/api/caisses", (req, res) => {
   const depensesVal = parseFloat(depenses || 0);
   const etats = getEtats();
   const versements = getVersements();
-  const recouvrements = getRecouvrements();
 
   const caissesTriees = [...caisses].sort((a, b) => a.date.localeCompare(b.date));
   const caissesAvant = caissesTriees.filter(c => c.date < date);
   const initial = caissesAvant.length > 0 ? caissesAvant[caissesAvant.length - 1].reste : 0;
 
-const dateJ1 = new Date(new Date(date).getTime() - 86400000).toISOString().slice(0, 10);
-const etatDuJour = etats.find(e => e.date === dateJ1 && e.finFields);  
-  //change
+  const dateJ1 = new Date(new Date(date).getTime() - 86400000).toISOString().slice(0, 10);
+  const etatDuJour = etats.find(e => e.date === dateJ1 && e.finFields);
   const CHAMPS_ESPECE = ["espece", "paiementLivraison"];
   const totalEtatJour = etatDuJour?.finFields
-  ? CHAMPS_ESPECE.reduce((s, k) => s + parseFloat(etatDuJour.finFields[k] || 0), 0)
-  : 0;
-  
+    ? CHAMPS_ESPECE.reduce((s, k) => s + parseFloat(etatDuJour.finFields[k] || 0), 0)
+    : 0;
 
   const totalVerse = versements.filter(v => v.date === date).reduce((s, v) => s + v.montant, 0);
-  const totalRecouv = recouvrements.filter(r => r.dateRecuperation === date).reduce((s, r) => s + r.montant, 0);
+
+  // Lignes d'écart payées en espece à cette date
+  const totalRecouv = etats.reduce((sum, etat) => {
+    return sum + (etat.lignesEcart || []).reduce((s, l) => {
+      if (l.statut === "paye" && l.datePaiement === date && l.modePaiement === "espece") {
+        return s + (l.montant || 0);
+      }
+      return s;
+    }, 0);
+  }, 0);
+
   const solde = parseFloat((initial + totalEtatJour + totalRecouv - totalVerse - depensesVal).toFixed(3));
 
   const caisse = {
@@ -587,7 +516,7 @@ const etatDuJour = etats.find(e => e.date === dateJ1 && e.finFields);
     createdAt: Date.now(), locked: true,
   };
   saveCaisse(caisse);
-  console.log("Caisse creee: " + date + " solde=" + solde + " depenses=" + depensesVal);
+  console.log("Caisse creee: " + date + " solde=" + solde);
   res.status(201).json(caisse);
 });
 
@@ -598,32 +527,30 @@ app.get("/api/caisses/preview/:date", (req, res) => {
   const caisses = getCaisses();
   const etats = getEtats();
   const versements = getVersements();
-  const recouvrements = getRecouvrements();
 
   const caissesTriees = [...caisses].sort((a, b) => a.date.localeCompare(b.date));
   const caissesAvant = caissesTriees.filter(c => c.date < date);
   const initial = caissesAvant.length > 0 ? caissesAvant[caissesAvant.length - 1].reste : 0;
 
-const dateJ1 = new Date(new Date(date).getTime() - 86400000).toISOString().slice(0, 10);
-const etatDuJour = etats.find(e => e.date === dateJ1 && e.finFields);
-
-  //change
+  const dateJ1 = new Date(new Date(date).getTime() - 86400000).toISOString().slice(0, 10);
+  const etatDuJour = etats.find(e => e.date === dateJ1 && e.finFields);
   const CHAMPS_ESPECE = ["espece", "paiementLivraison"];
   const totalEtatJour = etatDuJour?.finFields
     ? CHAMPS_ESPECE.reduce((s, k) => s + parseFloat(etatDuJour.finFields[k] || 0), 0)
     : 0;
+
   const totalVerse = versements.filter(v => v.date === date).reduce((s, v) => s + v.montant, 0);
 
-  const recouvEspece = recouvrements.filter(r => {
-    const sameDate = r.dateRecuperation === date;
-    const isEspece = !r.modePaiement || r.modePaiement === "espece" || r.modePaiement === null;
-    return sameDate && isEspece;
-  });
-  const totalRecouv = recouvEspece.reduce((s, r) => s + parseFloat(r.montant || 0), 0);
-  console.log("Preview " + date + " recouv:", recouvEspece.length, "total:", totalRecouv);
+  const totalRecouv = etats.reduce((sum, etat) => {
+    return sum + (etat.lignesEcart || []).reduce((s, l) => {
+      if (l.statut === "paye" && l.datePaiement === date && l.modePaiement === "espece") {
+        return s + (l.montant || 0);
+      }
+      return s;
+    }, 0);
+  }, 0);
 
   const solde = parseFloat((initial + totalEtatJour + totalRecouv - totalVerse - depenses).toFixed(3));
-
   res.json({ initial, totalEtatJour, totalVerse, totalRecouv, depenses, solde, reste: solde });
 });
 

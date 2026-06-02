@@ -12,13 +12,9 @@ const FIELD_LABELS = {
   paiementLivraison: "Paiement a la livraison", steLivraison: "STE de livraison",
 };
 
-// Modes de paiement par défaut pour chaque champ
 const FIELD_MODES = {
-  banque: "virement",
-  tpe: "tpe",
-  espece: "espece",
-  paiementLivraison: "espece",
-  steLivraison: "cheque",
+  banque: "virement", tpe: "tpe", espece: "espece",
+  paiementLivraison: "espece", steLivraison: "cheque",
 };
 
 const INITIAL_FIN = { banque: "", tpe: "", espece: "", paiementLivraison: "", steLivraison: "" };
@@ -26,15 +22,12 @@ const INITIAL_FIN = { banque: "", tpe: "", espece: "", paiementLivraison: "", st
 const fmt = (v) => new Intl.NumberFormat("fr-TN", { style: "currency", currency: "TND", minimumFractionDigits: 3 }).format(parseFloat(v) || 0);
 const fnum = (v) => parseFloat(v) || 0;
 
-const JUSTIFICATION_TYPES = [
-  { value: "manque", label: "Manque" },
-  { value: "avoir_facture", label: "Avoir facture" },
-  { value: "depense", label: "Depense" },
-  { value: "reste_payer", label: "Reste a payer" },
-  { value: "reste_deposer", label: "Reste a deposer STE" },
-];
-
-const JUST_LABELS = Object.fromEntries(JUSTIFICATION_TYPES.map(t => [t.value, t.label]));
+// Statuts des lignes d'écart
+const STATUT_CONFIG = {
+  a_voir:  { label: "À voir",  color: "#fbbf24", bg: "#2d1a0d", border: "#92400e44" },
+  manque:  { label: "Manque",  color: "#f87171", bg: "#2d0d0d", border: "#7f1d1d44" },
+  paye:    { label: "Payé",    color: "#4ade80", bg: "#0d2318", border: "#16532d44" },
+};
 
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=Crimson+Pro:wght@300;400;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
@@ -51,6 +44,7 @@ const css = `
   .bs{background:linear-gradient(135deg,#15803d,#22c55e);color:#fff;}
   .bg{background:#252438;color:#8a7f9a;}
   .bg:hover{background:#2e2a3e;}
+  .br{background:linear-gradient(135deg,#7f1d1d,#ef4444);color:#fff;}
   .card{background:#161622;border:1px solid #252438;border-radius:12px;padding:28px 32px;margin-bottom:16px;}
   .two{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
   .three{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:20px;}
@@ -87,9 +81,9 @@ const css = `
   .file-link{color:#a78bfa;font-family:'JetBrains Mono',monospace;font-size:12px;text-decoration:none;}
   .file-link:hover{text-decoration:underline;}
   .caisse-calc{background:#0f1117;border-radius:8px;padding:14px 18px;margin-bottom:12px;}
-  .recouv-item{background:#1a1a2e;border:1px solid #2e2a3e;border-radius:8px;padding:12px 16px;margin-bottom:10px;cursor:pointer;transition:border-color 0.2s;}
-  .recouv-item:hover{border-color:#7c3aed;}
-  .recouv-item.selected{border-color:#7c3aed;background:#1e1a2e;}
+  .ligne-ecart{background:#1a1a2e;border:1px solid #2e2a3e;border-radius:10px;padding:14px 18px;margin-bottom:10px;transition:border-color 0.2s;}
+  .statut-badge{display:inline-flex;align-items:center;padding:3px 10px;border-radius:20px;font-size:11px;font-family:'JetBrains Mono',monospace;font-weight:600;}
+  .statut-select{background:#1a1a2e;border:1px solid #3a3454;border-radius:6px;padding:5px 10px;color:#e8e0d0;font-size:12px;font-family:'JetBrains Mono',monospace;cursor:pointer;outline:none;}
   @media(max-width:600px){.two{grid-template-columns:1fr;}.three{grid-template-columns:1fr!important;}}
   @keyframes pop{from{transform:scale(0);opacity:0}to{transform:scale(1);opacity:1}}
 `;
@@ -119,7 +113,15 @@ export default function App() {
   const [selectedEtat, setSelectedEtat] = useState(null);
   const [finFields, setFinFields] = useState({ ...INITIAL_FIN });
   const [finStep, setFinStep] = useState("list");
-  const [newJust, setNewJust] = useState({ type: "", montant: "", note: "", dateEcart: new Date().toISOString().slice(0,10), modePaiement: "espece", pieceJointe: null });
+
+  // Nouvelle ligne d'écart
+  const [newLigne, setNewLigne] = useState({ client: "", montant: "", note: "" });
+
+  // Modal statut ligne (financier)
+  const [modalLigne, setModalLigne] = useState(null); // { ligne, etatId }
+  const [modalStatut, setModalStatut] = useState("a_voir");
+  const [modalMode, setModalMode] = useState("espece");
+  const [modalDate, setModalDate] = useState(new Date().toISOString().slice(0, 10));
 
   // Financier - Versement
   const [versDate, setVersDate] = useState(new Date().toISOString().slice(0, 10));
@@ -134,12 +136,6 @@ export default function App() {
   const [caisseDeps, setCaisseDeps] = useState("");
   const [caisses, setCaisses] = useState([]);
   const [caissePreview, setCaissePreview] = useState(null);
-  const [ecartsARecuperer, setEcartsARecuperer] = useState([]);
-  const [selectedEcart, setSelectedEcart] = useState(null);
-  const [dateRecup, setDateRecup] = useState(new Date().toISOString().slice(0, 10));
-  const [montantRecup, setMontantRecup] = useState("");
-  const [modePaiementRecup, setModePaiementRecup] = useState("espece");
-  const [showRecoupModal, setShowRecoupModal] = useState(false);
 
   const showToast = (msg, color = "#22c55e") => {
     setToast({ msg, color });
@@ -151,7 +147,7 @@ export default function App() {
     const found = Object.values(USERS).find(u => u.email === loginEmail.trim() && u.password === loginPass);
     if (!found) { setLoginError("Email ou mot de passe incorrect."); return; }
     setUser(found);
-    if (found.role === "financier") { loadEtats(); loadVersements(); loadCaisses(); loadEcartsARecuperer(); }
+    if (found.role === "financier") { loadEtats(); loadVersements(); loadCaisses(); }
     if (found.role === "admin") { loadAdminEtats(); loadAdminVersements(); loadAdminCaisses(); }
   };
 
@@ -167,7 +163,6 @@ export default function App() {
   const loadEtats = async () => { try { const r = await fetch(API + "/etats"); setEtats(await r.json()); } catch {} };
   const loadVersements = async () => { try { const r = await fetch(API + "/versements"); setVersements(await r.json()); } catch {} };
   const loadCaisses = async () => { try { const r = await fetch(API + "/caisses"); setCaisses(await r.json()); } catch {} };
-  const loadEcartsARecuperer = async () => { try { const r = await fetch(API + "/ecarts-a-recuperer"); setEcartsARecuperer(await r.json()); } catch {} };
 
   const loadCaissePreview = async (date, deps) => {
     try {
@@ -185,12 +180,7 @@ export default function App() {
     setLoading(true);
     try {
       const r = await fetch(API + "/etats", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ date: adminDate, montantTotal: parseFloat(adminTotal) }) });
-      if (!r.ok) {
-        const err = await r.json();
-        showToast(err.error, "#ef4444");
-        setLoading(false);
-        return;
-      }
+      if (!r.ok) { const err = await r.json(); showToast(err.error, "#ef4444"); setLoading(false); return; }
       const data = await r.json();
       setAdminEtats(prev => [data, ...prev]);
       setAdminTotal(""); setAdminView("dashboard"); showToast("Etat ouvert!");
@@ -200,15 +190,8 @@ export default function App() {
 
   const handleFermerEtat = async (id) => {
     try {
-      const r = await fetch(API + "/etats/" + id + "/fermer", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" }
-      });
-      if (!r.ok) {
-        const err = await r.json();
-        showToast(err.error, "#ef4444");
-        return;
-      }
+      const r = await fetch(API + "/etats/" + id + "/fermer", { method: "PUT", headers: { "Content-Type": "application/json" } });
+      if (!r.ok) { const err = await r.json(); showToast(err.error, "#ef4444"); return; }
       const data = await r.json();
       setAdminEtats(prev => prev.map(e => e.id === id ? data : e));
       if (selectedEtatAdmin?.id === id) setSelectedEtatAdmin(data);
@@ -231,11 +214,8 @@ export default function App() {
   const selectEtat = (etat) => {
     setSelectedEtat(etat);
     setFinFields({ ...INITIAL_FIN });
-    if (etat.status === "closed") {
-      setFinStep("readonly");
-    } else {
-      setFinStep(etat.finFields ? "ecart" : "saisie");
-    }
+    if (etat.status === "closed") setFinStep("readonly");
+    else setFinStep(etat.finFields ? "ecart" : "saisie");
   };
 
   const handleFinancierValidate = async () => {
@@ -252,18 +232,13 @@ export default function App() {
       const data = await r.json();
       setSelectedEtat(data);
       const ecart = data.ecarts?.ecartGlobal || 0;
-
       if (data.status === "closed") {
-        // Fermé automatiquement (tout espece + ecart 0)
-        setFinStep("list");
-        loadEtats();
+        setFinStep("list"); loadEtats();
         showToast("Aucun ecart! Etat ferme automatiquement.", "#22c55e");
       } else if (Math.abs(ecart) < 0.001) {
-        // Ecart = 0 mais mode non-espece → admin doit fermer
         setFinStep("ecart");
-        showToast("Validation OK. En attente de fermeture par l'admin (mode non-espece).", "#f59e0b");
+        showToast("Validation OK. En attente de fermeture par l'admin.", "#f59e0b");
       } else {
-        // Ecart détecté
         setFinStep("ecart");
         showToast("Ecart detecte : " + (ecart > 0 ? "+" : "") + ecart.toFixed(3) + " TND", "#f59e0b");
       }
@@ -271,46 +246,64 @@ export default function App() {
     setLoading(false);
   };
 
-  const addJustification = async () => {
-    if (!newJust.type || !newJust.montant || !newJust.note) return showToast("Remplissez tous les champs.", "#ef4444");
-    if (newJust.modePaiement !== "espece" && !newJust.pieceJointe) return showToast("Piece jointe obligatoire pour TPE/Virement/Cheque.", "#ef4444");
-
+  // Ajouter une ligne d'écart
+  const addLigneEcart = async () => {
+    if (!newLigne.client || !newLigne.montant) return showToast("Client et montant obligatoires.", "#ef4444");
     setLoading(true);
     try {
-      const fd = new FormData();
-      fd.append("type", newJust.type);
-      fd.append("montant", newJust.montant);
-      fd.append("note", newJust.note);
-      fd.append("dateEcart", newJust.dateEcart);
-      fd.append("modePaiement", newJust.modePaiement);
-      if (newJust.pieceJointe) fd.append("pieceJointe", newJust.pieceJointe);
-
-      const r = await fetch(API + "/etats/" + selectedEtat.id + "/justifications", { method: "POST", body: fd });
-
-      if (!r.ok) {
-        const err = await r.json();
-        showToast(err.error, "#ef4444");
-        setLoading(false);
-        return;
-      }
-
+      if (restantACouvrir < 0.001) return showToast("Ecart déjà couvert, impossible d'ajouter.", "#ef4444");
+      const r = await fetch(API + "/etats/" + selectedEtat.id + "/lignes-ecart", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client: newLigne.client, montant: newLigne.montant, note: newLigne.note }),
+      });
+      if (!r.ok) { const err = await r.json(); showToast(err.error, "#ef4444"); setLoading(false); return; }
       const data = await r.json();
       setSelectedEtat(data);
-      setNewJust({ type: "", montant: "", note: "", dateEcart: new Date().toISOString().slice(0, 10), modePaiement: "espece", pieceJointe: null });
-
-      // Si espece → rafraichir le preview de la caisse d'aujourd'hui
-      if (newJust.modePaiement === "espece") {
-        const today = new Date().toISOString().slice(0, 10);
-        loadCaissePreview(today, caisseDeps);
-      }
-
-      showToast("Ecart ajoute.");
+      setNewLigne({ client: "", montant: "", note: "" });
+      showToast("Ligne ajoutée.");
     } catch { showToast("Erreur.", "#ef4444"); }
     setLoading(false);
   };
 
-  const removeJustification = async (jid) => {
-    try { const r = await fetch(API + "/etats/" + selectedEtat.id + "/justifications/" + jid, { method: "DELETE" }); setSelectedEtat(await r.json()); } catch { }
+  // Supprimer une ligne (seulement "a_voir")
+  const deleteLigneEcart = async (lid) => {
+    try {
+      const r = await fetch(API + "/etats/" + selectedEtat.id + "/lignes-ecart/" + lid, { method: "DELETE" });
+      if (!r.ok) { const err = await r.json(); showToast(err.error, "#ef4444"); return; }
+      const data = await r.json();
+      setSelectedEtat(data);
+      showToast("Ligne supprimée.");
+    } catch { showToast("Erreur.", "#ef4444"); }
+  };
+
+  // Ouvrir modal changement de statut
+  const openModalStatut = (ligne) => {
+    setModalLigne(ligne);
+    setModalStatut(ligne.statut);
+    setModalMode(ligne.modePaiement || "espece");
+    setModalDate(ligne.datePaiement || new Date().toISOString().slice(0, 10));
+  };
+
+  // Confirmer changement de statut
+  const confirmerStatut = async () => {
+    if (!modalLigne) return;
+    setLoading(true);
+    const etatId = selectedEtat?.id || selectedEtatAdmin?.id;
+    try {
+      const r = await fetch(API + "/etats/" + etatId + "/lignes-ecart/" + modalLigne.id, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ statut: modalStatut, modePaiement: modalMode, datePaiement: modalDate }),
+      });
+      if (!r.ok) { const err = await r.json(); showToast(err.error, "#ef4444"); setLoading(false); return; }
+      const data = await r.json();
+      if (selectedEtat?.id === etatId) { setSelectedEtat(data); loadCaissePreview(caisseDate); }
+      if (selectedEtatAdmin?.id === etatId) { setSelectedEtatAdmin(data); setAdminEtats(prev => prev.map(e => e.id === etatId ? data : e)); }
+      setModalLigne(null);
+      showToast("Statut mis à jour.");
+    } catch { showToast("Erreur.", "#ef4444"); }
+    setLoading(false);
   };
 
   // ── VERSEMENT ──
@@ -346,29 +339,15 @@ export default function App() {
     setLoading(false);
   };
 
-  // ── RECOUVREMENT ──
-  const handleRecouvrement = async () => {
-    if (!selectedEcart || !dateRecup) return showToast("Selectionnez un ecart et une date.", "#ef4444");
-    setLoading(true);
-    try {
-      const r = await fetch(API + "/recouvrements", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ etatId: selectedEcart.etatId, justificationId: selectedEcart.justificationId, dateRecuperation: dateRecup, montant: parseFloat(montantRecup) || selectedEcart.restant, modePaiement: modePaiementRecup }),
-      });
-      if (!r.ok) { const e = await r.json(); showToast(e.error, "#ef4444"); setLoading(false); return; }
-      await r.json();
-      setShowRecoupModal(false); setSelectedEcart(null); setMontantRecup(""); setModePaiementRecup("espece");
-      loadEcartsARecuperer(); loadCaisses(); loadCaissePreview(caisseDate);
-      showToast("Ecart marque comme recupere le " + dateRecup + "!");
-    } catch { showToast("Erreur.", "#ef4444"); }
-    setLoading(false);
-  };
-
+  // ── Calculs lignes d'écart ──
+  const lignesEcart = selectedEtat?.lignesEcart || [];
   const ecarts = selectedEtat?.ecarts || {};
-  const justifications = selectedEtat?.justifications || [];
   const ecartGlobal = ecarts.ecartGlobal || 0;
-  const totalJustifie = justifications.reduce((s, j) => s + j.montant, 0);
-  const restant = Math.max(0, Math.abs(ecartGlobal) - totalJustifie);
+  const totalLignes = lignesEcart.reduce((s, l) => s + (l.montant || 0), 0);
+  const restantACouvrir = Math.max(0, Math.abs(ecartGlobal) - totalLignes);
+  const lignesNonTraitees = lignesEcart.filter(l => l.statut === "a_voir").length;
+  const peutFermer = Math.abs(ecartGlobal) < 0.001 ||
+    (totalLignes >= Math.abs(ecartGlobal) - 0.001 && lignesNonTraitees === 0);
 
   const Navbar = () => (
     <div className="navbar">
@@ -390,12 +369,11 @@ export default function App() {
     </div>
   );
 
-  const CaisseCalcBox = ({ data, title }) => data ? (
+  const CaisseCalcBox = ({ data }) => data ? (
     <div className="caisse-calc">
-      {title && <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380", marginBottom: 10 }}>{title}</div>}
       <div className="read-row"><span style={{ color: "#8a7f9a", fontSize: 13 }}>Initial (reste j-1)</span><span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 13 }}>{fmt(data.initial)}</span></div>
       <div className="read-row"><span style={{ color: "#4ade80", fontSize: 13 }}>+ Total etat de vente</span><span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 13, color: "#4ade80" }}>+{fmt(data.totalEtatJour)}</span></div>
-      {(data.totalRecouv > 0) && <div className="read-row"><span style={{ color: "#a78bfa", fontSize: 13 }}>+ Ecarts recuperes</span><span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 13, color: "#a78bfa" }}>+{fmt(data.totalRecouv)}</span></div>}
+      {(data.totalRecouv > 0) && <div className="read-row"><span style={{ color: "#a78bfa", fontSize: 13 }}>+ Ecarts recuperes (espece)</span><span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 13, color: "#a78bfa" }}>+{fmt(data.totalRecouv)}</span></div>}
       <div className="read-row"><span style={{ color: "#f87171", fontSize: 13 }}>- Verse banque</span><span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 13, color: "#f87171" }}>-{fmt(data.totalVerse)}</span></div>
       {data.depenses > 0 && <div className="read-row"><span style={{ color: "#f87171", fontSize: 13 }}>- Depenses</span><span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 13, color: "#f87171" }}>-{fmt(data.depenses)}</span></div>}
       <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 10, fontWeight: 700, fontSize: 16 }}>
@@ -404,6 +382,57 @@ export default function App() {
       </div>
     </div>
   ) : null;
+
+  // ── Composant liste de lignes d'écart ──
+  const LignesEcartList = ({ lignes, etatId, canEdit, onRefresh }) => {
+    if (!lignes || lignes.length === 0) return null;
+    return (
+      <div>
+        {lignes.map(l => {
+          const s = STATUT_CONFIG[l.statut] || STATUT_CONFIG.a_voir;
+          return (
+            <div key={l.id} className="ligne-ecart" style={{ borderLeft: `3px solid ${s.color}` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
+                    <span style={{ fontWeight: 700, fontSize: 15 }}>👤 {l.client}</span>
+                    <span style={{ fontFamily: "'JetBrains Mono',monospace", color: "#fbbf24", fontWeight: 600 }}>{fmt(l.montant)}</span>
+                    <span className="statut-badge" style={{ background: s.bg, border: `1px solid ${s.border}`, color: s.color }}>{s.label}</span>
+                  </div>
+                  {l.note && <div style={{ fontSize: 13, color: "#8a7f9a", marginBottom: 4 }}>{l.note}</div>}
+                  {l.statut === "paye" && (
+                    <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#4ade80", marginTop: 4 }}>
+                      Payé le {l.datePaiement} — {l.modePaiement === "espece" ? "Espece" : l.modePaiement === "cheque" ? "Chèque" : l.modePaiement === "virement" ? "Virement" : "TPE"}
+                    </div>
+                  )}
+                </div>
+                {canEdit && (
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <button
+                      className="btn bg"
+                      style={{ fontSize: 11, padding: "12px 12px", color: "white" }}
+                      onClick={() => openModalStatut(l)}
+                    >
+                      Modifier statut
+                    </button>
+                    {l.statut === "a_voir" && (
+                      <button
+                        className="btn br"
+                        style={{ fontSize: 11, padding: "6px 10px" }}
+                        onClick={() => deleteLigneEcart(l.id)}
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
 
   // LOGIN
   if (!user) return (
@@ -420,21 +449,74 @@ export default function App() {
           <div className="ig"><label>Mot de passe</label><input className="inp" type="password" placeholder="••••••••" value={loginPass} onChange={e => setLoginPass(e.target.value)} onKeyDown={e => e.key === "Enter" && handleLogin()} /></div>
           {loginError && <div style={{ background: "#2d0d0d", border: "1px solid #7f1d1d44", borderRadius: 6, padding: "10px 14px", fontSize: 13, color: "#f87171", fontFamily: "'JetBrains Mono',monospace", marginBottom: 16 }}>{loginError}</div>}
           <button className="btn bp" style={{ width: "100%" }} onClick={handleLogin}>Se connecter</button>
-      
         </div>
       </div>
     </div>
   );
 
-  // ADMIN
+  // ═══════ ADMIN ═══════
   if (user.role === "admin") {
     const nbOuverts = adminEtats.filter(e => e.status === "open").length;
     const nbFermes = adminEtats.filter(e => e.status === "closed").length;
+
+    // Calcul pour un état admin: peut-il être fermé ?
+    const adminPeutFermer = (etat) => {
+      if (!etat.finFields) return false;
+      const ecart = Math.abs(etat.ecarts?.ecartGlobal || 0);
+      if (ecart < 0.001) return true;
+      const lignes = etat.lignesEcart || [];
+      const total = lignes.reduce((s, l) => s + (l.montant || 0), 0);
+      const nonTraitees = lignes.filter(l => l.statut === "a_voir").length;
+      return total >= ecart - 0.001 && nonTraitees === 0;
+    };
 
     return (
       <div style={{ background: "#0f1117", minHeight: "100vh" }}>
         <style>{css}</style>
         {toast && <div className="toast" style={{ background: toast.color }}>{toast.msg}</div>}
+
+        {/* Modal statut (admin aussi peut modifier) */}
+        {modalLigne && (
+          <div style={{ position: "fixed", inset: 0, background: "#00000088", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+            <div style={{ background: "#161622", border: "1px solid #252438", borderRadius: 12, padding: 28, maxWidth: 420, width: "100%" }}>
+              <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Statut — {modalLigne.client}</div>
+              <div style={{ fontSize: 13, color: "#8a7f9a", fontFamily: "'JetBrains Mono',monospace", marginBottom: 20 }}>{fmt(modalLigne.montant)}</div>
+              <div className="ig">
+                <label>Statut</label>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {Object.entries(STATUT_CONFIG).map(([k, v]) => (
+                    <button key={k} onClick={() => setModalStatut(k)}
+                      style={{ flex: 1, padding: "10px 8px", borderRadius: 8, border: `2px solid ${modalStatut === k ? v.color : "#2e2a3e"}`, background: modalStatut === k ? v.bg : "#1a1a2e", color: v.color, fontFamily: "'JetBrains Mono',monospace", fontSize: 12, cursor: "pointer", fontWeight: 600, transition: "all 0.15s" }}>
+                      {v.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {modalStatut === "paye" && (
+                <div className="two">
+                  <div className="ig">
+                    <label>Date paiement</label>
+                    <input type="date" className="inp" value={modalDate} onChange={e => setModalDate(e.target.value)} />
+                  </div>
+                  <div className="ig">
+                    <label>Mode</label>
+                    <select className="inp" value={modalMode} onChange={e => setModalMode(e.target.value)}>
+                      <option value="espece">Espece</option>
+                      <option value="cheque">Chèque</option>
+                      <option value="virement">Virement</option>
+                      <option value="tpe">TPE</option>
+                    </select>
+                  </div>
+                </div>
+              )}
+              <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 16 }}>
+                <button className="btn bg" onClick={() => setModalLigne(null)}>Annuler</button>
+                <button className="btn bp" onClick={confirmerStatut} disabled={loading}>{loading ? "..." : "Confirmer"}</button>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div style={{ maxWidth: 900, margin: "0 auto", padding: "40px 20px" }}>
           <Navbar />
 
@@ -448,7 +530,7 @@ export default function App() {
                 <div className="ig"><label>Montant total (TND)</label><input type="number" className="inp" placeholder="0.000" step="0.001" value={adminTotal} onChange={e => setAdminTotal(e.target.value)} /></div>
                 <hr />
                 <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                  <button className="btn bp" onClick={handleAdminOpen} disabled={loading}>{loading ? "..." : "Ouvrir l etat"}</button>
+                  <button className="btn bp" onClick={handleAdminOpen} disabled={loading}>{loading ? "..." : "Ouvrir l'etat"}</button>
                 </div>
               </div>
             </div>
@@ -464,67 +546,47 @@ export default function App() {
                     <div className="st">Etat du {selectedEtatAdmin.date}</div>
                   </div>
                   {selectedEtatAdmin.status === "open" && (() => {
-                    const ecart = selectedEtatAdmin.ecarts?.ecartGlobal || 0;
-                    const hasEcart = Math.abs(ecart) > 0.001;
-                    const justifs = selectedEtatAdmin.justifications || [];
-                    // Couvert = espece recupere OU non-espece justifie (TPE/virement/cheque avec piece jointe)
-                    const totalCouvert = justifs.reduce((s, j) => {
-                      if (j.modePaiement === "espece") return s + (j.montantRecupere || 0);
-                      return s + (j.montant || 0); // non-espece: justification suffit
-                    }, 0);
-                    const restant = Math.max(0, parseFloat((Math.abs(ecart) - totalCouvert).toFixed(3)));
-
-                    // Pas encore validé par le financier
                     if (!selectedEtatAdmin.finFields) {
-                      return (
-                        <div style={{
-                          background: "#2d0d0d", border: "1px solid #7f1d1d44",
-                          borderRadius: 8, padding: "8px 16px", fontSize: 12,
-                          fontFamily: "'JetBrains Mono',monospace", color: "#f87171"
-                        }}>
-                          En attente de validation financier
-                        </div>
-                      );
+                      return <div style={{ background: "#2d0d0d", border: "1px solid #7f1d1d44", borderRadius: 8, padding: "8px 16px", fontSize: 12, fontFamily: "'JetBrains Mono',monospace", color: "#f87171" }}>En attente de validation financier</div>;
                     }
-
-                    // Validé AVEC écart non couvert
-                    if (hasEcart && restant > 0.001) {
-                      return (
-                        <div style={{
-                          background: "#2d1a0d", border: "1px solid #92400e44",
-                          borderRadius: 8, padding: "8px 16px", fontSize: 12,
-                          fontFamily: "'JetBrains Mono',monospace", color: "#fbbf24"
-                        }}>
-                          En attente de justification — reste {restant.toFixed(3)} TND
-                        </div>
-                      );
+                    const ecart = Math.abs(selectedEtatAdmin.ecarts?.ecartGlobal || 0);
+                    if (ecart > 0.001) {
+                      const lignes = selectedEtatAdmin.lignesEcart || [];
+                      const total = lignes.reduce((s, l) => s + (l.montant || 0), 0);
+                      const nonTraitees = lignes.filter(l => l.statut === "a_voir").length;
+                      if (total < ecart - 0.001) {
+                        return <div style={{ background: "#2d1a0d", border: "1px solid #92400e44", borderRadius: 8, padding: "8px 16px", fontSize: 12, fontFamily: "'JetBrains Mono',monospace", color: "#fbbf24" }}>
+                          Ecart non couvert — reste {(ecart - total).toFixed(3)} TND à distribuer
+                        </div>;
+                      }
+                      if (nonTraitees > 0) {
+                        return <div style={{ background: "#2d1a0d", border: "1px solid #92400e44", borderRadius: 8, padding: "8px 16px", fontSize: 12, fontFamily: "'JetBrains Mono',monospace", color: "#fbbf24" }}>
+                          {nonTraitees} ligne(s) encore "À voir"
+                        </div>;
+                      }
                     }
-
-                    // Validé SANS écart ou tout justifié/recouvré → bouton fermer visible
-                    return (
-                      <button className="btn bs" onClick={() => handleFermerEtat(selectedEtatAdmin.id)}>
-                        Fermer l etat
-                      </button>
-                    );
+                    return <button className="btn bs" onClick={() => handleFermerEtat(selectedEtatAdmin.id)}>Fermer l'etat</button>;
                   })()}
                   {selectedEtatAdmin.status === "closed" && (
                     <div style={{ background: "#0d2318", border: "1px solid #16532d", borderRadius: 8, padding: "8px 16px", fontSize: 12, fontFamily: "'JetBrains Mono',monospace", color: "#4ade80" }}>FERME</div>
                   )}
                 </div>
+
+                {/* Résumé montants */}
                 <div style={{ background: "#1a1a2e", border: "1px solid #2e2a3e", borderRadius: 8, padding: "14px 18px", marginBottom: 16 }}>
                   <div className="read-row"><span style={{ color: "#8a7f9a" }}>Montant admin</span><span style={{ color: "#a78bfa", fontFamily: "'JetBrains Mono',monospace", fontWeight: 600 }}>{fmt(selectedEtatAdmin.montantTotal)}</span></div>
                   {selectedEtatAdmin.totalFin !== null && <div className="read-row"><span style={{ color: "#8a7f9a" }}>Total financier</span><span style={{ color: "#4ade80", fontFamily: "'JetBrains Mono',monospace", fontWeight: 600 }}>{fmt(selectedEtatAdmin.totalFin)}</span></div>}
                   {selectedEtatAdmin.ecarts && (
                     <div className="read-row">
                       <span style={{ color: "#8a7f9a" }}>Ecart</span>
-                      <span style={{ fontFamily: "'JetBrains Mono',monospace", fontWeight: 600, color: selectedEtatAdmin.status === "closed" ? "#4ade80" : Math.abs(selectedEtatAdmin.ecarts.ecartGlobal) < 0.001 ? "#4ade80" : "#f87171" }}>
-                        {selectedEtatAdmin.status === "closed" && Math.abs(selectedEtatAdmin.ecarts.ecartGlobal) > 0.001
-                          ? `Écart recouvré de ${fmt(Math.abs(selectedEtatAdmin.ecarts.ecartGlobal))}`
-                          : fmt(selectedEtatAdmin.ecarts.ecartGlobal)}
+                      <span style={{ fontFamily: "'JetBrains Mono',monospace", fontWeight: 600, color: Math.abs(selectedEtatAdmin.ecarts.ecartGlobal) < 0.001 ? "#4ade80" : "#f87171" }}>
+                        {fmt(selectedEtatAdmin.ecarts.ecartGlobal)}
                       </span>
                     </div>
                   )}
                 </div>
+
+                {/* Detail financier */}
                 {selectedEtatAdmin.finFields && (
                   <div style={{ marginBottom: 16 }}>
                     <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380", marginBottom: 10 }}>DETAIL FINANCIER</div>
@@ -538,34 +600,26 @@ export default function App() {
                     </div>
                   </div>
                 )}
-                {selectedEtatAdmin.justifications?.length > 0 && (
+
+                {/* Lignes d'écart */}
+                {selectedEtatAdmin.lignesEcart?.length > 0 && (
                   <div>
-                    <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380", marginBottom: 10 }}>ECARTS ({selectedEtatAdmin.justifications.length})</div>
-                    {selectedEtatAdmin.justifications.map(j => (
-                      <div className="ji" key={j.id}>
-                        <div style={{ flex: 1 }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                            <span style={{ fontWeight: 600, color: "#a78bfa" }}>{JUST_LABELS[j.type]}</span>
-                            <span style={{ fontFamily: "'JetBrains Mono',monospace", color: "#fbbf24", marginLeft: "auto" }}>{fmt(j.montant)}</span>
-                          </div>
-                          <div style={{ fontSize: 13, color: "#8a7f9a", marginBottom: 4 }}>{j.note}</div>
-                          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 4 }}>
-                            {j.modePaiement && (
-                              <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: j.modePaiement === "espece" ? "#4ade80" : j.modePaiement === "cheque" ? "#a78bfa" : "#fbbf24" }}>
-                                {j.modePaiement === "espece" ? "Espece" : j.modePaiement === "tpe" ? "TPE" : j.modePaiement === "virement" ? "Virement" : "Cheque"}
-                              </span>
-                            )}
-                            {j.dateEcart && <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380" }}>Date: {j.dateEcart}</span>}
-                            {j.recupere && <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#4ade80" }}>Recupere le {j.dateRecuperation}</span>}
-                          </div>
-                          {j.pieceJointe && (
-                            <a href={"http://137.74.42.45:3001/uploads/" + j.pieceJointe} target="_blank" rel="noreferrer" className="file-link" style={{ display: "inline-block", marginTop: 4 }}>
-                              📎 Voir piece jointe
-                            </a>
-                          )}
-                        </div>
-                      </div>
-                    ))}
+                    <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380", marginBottom: 12 }}>
+                      LIGNES D'ÉCART ({selectedEtatAdmin.lignesEcart.length})
+                    </div>
+                    {/* Résumé statuts */}
+                    <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+                      {Object.entries(STATUT_CONFIG).map(([k, v]) => {
+                        const count = selectedEtatAdmin.lignesEcart.filter(l => l.statut === k).length;
+                        if (count === 0) return null;
+                        return <span key={k} className="statut-badge" style={{ background: v.bg, border: `1px solid ${v.border}`, color: v.color }}>{v.label} × {count}</span>;
+                      })}
+                    </div>
+                    <LignesEcartList
+                      lignes={selectedEtatAdmin.lignesEcart}
+                      etatId={selectedEtatAdmin.id}
+                      canEdit={selectedEtatAdmin.status === "open"}
+                    />
                   </div>
                 )}
               </div>
@@ -586,53 +640,76 @@ export default function App() {
                 ))}
               </div>
 
-              {adminTab === "etats" && (
-                <div>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-                    <div className="st">Historique</div>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <button className="btn bg" style={{ fontSize: 12, padding: "8px 14px" }} onClick={loadAdminEtats}>Actualiser</button>
-                      <button className="btn bp" style={{ fontSize: 13, padding: "10px 20px" }} onClick={() => setAdminView("form")}>+ Nouvel etat</button>
-                    </div>
-                  </div>
-                  {adminEtats.length === 0 ? (
-                    <div className="card" style={{ textAlign: "center", padding: "40px", color: "#6b6380" }}>
-                      <div style={{ fontSize: 36, marginBottom: 12 }}>📋</div>
-                      <p style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 13 }}>Aucun etat</p>
-                    </div>
-                  ) : adminEtats.map(e => (
-                    <div key={e.id} className={"etat-card clickable " + (e.status === "open" ? "etat-open" : "etat-closed")}
-                      onClick={() => { setSelectedEtatAdmin(e); setAdminView("detail"); }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-                        <div>
-                          <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 4 }}>{e.date}</div>
-                          <div style={{ fontFamily: "'JetBrains Mono',monospace", color: "#a78bfa", fontSize: 13 }}>Montant : {fmt(e.montantTotal)}</div>
-                          {e.ecarts && (() => {
-                            const ecart = e.ecarts.ecartGlobal;
-                            const justifs = e.justifications || [];
-                            const totalCouvert = justifs.reduce((s, j) => {
-                              if (j.modePaiement === "espece") return s + (j.montantRecupere || 0);
-                              return s + (j.montant || 0);
-                            }, 0);
-                            const restant = Math.max(0, parseFloat((Math.abs(ecart) - totalCouvert).toFixed(3)));
-                            const isJustified = Math.abs(ecart) > 0.001 && restant < 0.001;
-                            const color = e.status === "closed" ? "#4ade80" : Math.abs(ecart) < 0.001 ? "#4ade80" : isJustified ? "#f59e0b" : "#f87171";
-                            let label;
-                            if (e.status === "closed" && Math.abs(ecart) > 0.001) label = `Écart recouvré de ${fmt(Math.abs(ecart))}`;
-                            else if (e.status === "closed") label = `Écart : ${fmt(ecart)}`;
-                            else if (isJustified) label = `Écart justifié ${fmt(ecart)} — à fermer`;
-                            else label = `Écart : ${fmt(ecart)}`;
-                            return <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 12, marginTop: 3, color }}>{label}</div>;
-                          })()}
-                        </div>
-                        <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, padding: "4px 12px", borderRadius: 20, background: e.status === "open" ? "#2d1a0d" : "#0d2318", color: e.status === "open" ? "#fbbf24" : "#4ade80" }}>
-                          {e.status === "open" ? "EN ATTENTE" : "FERME"}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
+             {adminTab === "etats" && (
+  <div>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+      <div className="st">Historique</div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button className="btn bg" style={{ fontSize: 12, padding: "8px 14px" }} onClick={loadAdminEtats}>Actualiser</button>
+        <button className="btn bp" style={{ fontSize: 13, padding: "10px 20px" }} onClick={() => setAdminView("form")}>+ Nouvel etat</button>
+      </div>
+    </div>
+    {adminEtats.length === 0 ? (
+      <div className="card" style={{ textAlign: "center", padding: "40px", color: "#6b6380" }}><div style={{ fontSize: 36, marginBottom: 12 }}>📋</div><p>Aucun etat</p></div>
+    ) : adminEtats.map(e => {
+      const ecart = e.ecarts?.ecartGlobal || 0;
+      const lignes = e.lignesEcart || [];
+      const nonTraitees = lignes.filter(l => l.statut === "a_voir").length;
+      const payees = lignes.filter(l => l.statut === "paye").length;
+      const manques = lignes.filter(l => l.statut === "manque").length;
+      return (
+        <div 
+          key={e.id} 
+          className={"etat-card clickable " + (e.status === "open" ? "etat-open" : "etat-closed")}
+          onClick={() => { setSelectedEtatAdmin(e); setAdminView("detail"); }}
+          style={{ position: "relative", width: "100%" }}
+        >
+          {/* Status badge - absolutely positioned to not affect text flow */}
+          <div style={{ 
+            position: "absolute", 
+            top: 12, 
+            right: 12, 
+            fontFamily: "'JetBrains Mono',monospace", 
+            fontSize: 11, 
+            padding: "4px 12px", 
+            borderRadius: 20, 
+            background: e.status === "open" ? "#2d1a0d" : "#0d2318", 
+            color: e.status === "open" ? "#fbbf24" : "#4ade80" 
+          }}>
+            {e.status === "open" ? "EN ATTENTE" : "FERME"}
+          </div>
+          
+          {/* Content - all left aligned, no flex space-between */}
+          <div style={{ width: "100%", paddingRight: 100 }}>
+            <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 4, textAlign: "left" }}>{e.date}</div>
+            <div style={{ fontFamily: "'JetBrains Mono',monospace", color: "#a78bfa", fontSize: 13, marginBottom: 3, textAlign: "left" }}>
+              Montant : {fmt(e.montantTotal)}
+            </div>
+            <div style={{ textAlign: "left" }}>
+              {Math.abs(ecart) > 0.001 && (
+                <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 12 }}>
+                  {/* Green text for closed/treated, red for open */}
+                  <span style={{ color: e.status === "closed" ? "#4ade80" : "#f87171" }}>
+                    Ecart : {fmt(ecart)}
+                  </span>
+                  {e.status === "closed" ? (
+                    <span style={{ color: "#4ade80", marginLeft: 8 }}>(traité)</span>
+                  ) : (
+                    lignes.length > 0 && (
+                      <span style={{ color: "#8a7f9a", marginLeft: 8 }}>
+                        ({payees} payé · {manques} manque · {nonTraitees} à voir)
+                      </span>
+                    )
+                  )}
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      );
+    })}
+  </div>
+)}
 
               {adminTab === "versements" && (
                 <div>
@@ -681,67 +758,54 @@ export default function App() {
     );
   }
 
-  // FINANCIER
+  // ═══════ FINANCIER ═══════
   return (
     <div style={{ background: "#0f1117", minHeight: "100vh" }}>
       <style>{css}</style>
       {toast && <div className="toast" style={{ background: toast.color }}>{toast.msg}</div>}
 
-      {/* Modal recouvrement */}
-      {showRecoupModal && (
-        <div style={{ position: "fixed", inset: 0, background: "#00000088", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-          <div style={{ background: "#161622", border: "1px solid #252438", borderRadius: 12, padding: 28, maxWidth: 500, width: "100%" }}>
-            <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 20 }}>Marquer un ecart comme recupere</div>
-            <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380", marginBottom: 12 }}>SELECTIONNER L ECART</div>
-            <div style={{ maxHeight: 200, overflowY: "auto", marginBottom: 16 }}>
-              {ecartsARecuperer.length === 0 ? (
-                <div style={{ color: "#6b6380", fontSize: 13, fontFamily: "'JetBrains Mono',monospace", padding: "12px 0" }}>Aucun ecart a recuperer</div>
-              ) : ecartsARecuperer.map(e => (
-                <div key={e.justificationId} className={"recouv-item " + (selectedEcart?.justificationId === e.justificationId ? "selected" : "")}
-                  onClick={() => { setSelectedEcart(e); setMontantRecup(e.restant.toFixed(3)); setModePaiementRecup(e.modePaiement || "espece"); }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-                    <div>
-                      <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 2 }}>{JUST_LABELS[e.type]} — {e.etatDate}</div>
-                      <div style={{ fontSize: 12, color: "#8a7f9a", marginBottom: 2 }}>{e.note}</div>
-                      {e.modePaiement && <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: e.modePaiement === "espece" ? "#4ade80" : e.modePaiement === "cheque" ? "#a78bfa" : "#fbbf24" }}>{e.modePaiement === "espece" ? "Espece" : e.modePaiement === "cheque" ? "Cheque" : "Traite"}</div>}
-                      {e.montantDejaRecup > 0 && <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#f87171" }}>Deja recu: {fmt(e.montantDejaRecup)}</div>}
-                      {e.pieceJointe && <span style={{ fontSize: 10, color: "#a78bfa" }}>📎 PJ</span>}
-                    </div>
-                    <div style={{ textAlign: "right" }}>
-                      <div style={{ fontFamily: "'JetBrains Mono',monospace", color: "#fbbf24", fontWeight: 600 }}>{fmt(e.restant)}</div>
-                      <div style={{ fontSize: 10, color: "#6b6380", fontFamily: "'JetBrains Mono',monospace" }}>restant</div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-            <div className="two">
-              <div className="ig">
-                <label>Date de recuperation</label>
-                <input type="date" className="inp" value={dateRecup} onChange={e => setDateRecup(e.target.value)} />
-              </div>
-              <div className="ig">
-                <label>Mode de paiement</label>
-                <select className="inp" value={modePaiementRecup} onChange={e => setModePaiementRecup(e.target.value)}>
-                  <option value="espece">Espece</option>
-                  <option value="cheque">Cheque</option>
-                  <option value="traite">Traite</option>
-                </select>
-              </div>
-            </div>
+      {/* Modal changement de statut ligne */}
+      {modalLigne && (
+        <div style={{ position: "fixed", inset: 0, background: "#00000088", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div style={{ background: "#161622", border: "1px solid #252438", borderRadius: 12, padding: 28, maxWidth: 420, width: "100%" }}>
+            <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Statut — {modalLigne.client}</div>
+            <div style={{ fontSize: 13, color: "#8a7f9a", fontFamily: "'JetBrains Mono',monospace", marginBottom: 20 }}>{fmt(modalLigne.montant)}{modalLigne.note && ` — ${modalLigne.note}`}</div>
             <div className="ig">
-              <label>Montant recupere (TND)</label>
-              <input type="number" className="inp" placeholder="0.000" step="0.001" value={montantRecup} onChange={e => setMontantRecup(e.target.value)} />
-              {selectedEcart && <div style={{ fontSize: 11, color: "#6b6380", fontFamily: "'JetBrains Mono',monospace", marginTop: 4 }}>Restant a recuperer: {fmt(selectedEcart.restant)}</div>}
+              <label>Nouveau statut</label>
+              <div style={{ display: "flex", gap: 8 }}>
+                {Object.entries(STATUT_CONFIG).map(([k, v]) => (
+                  <button key={k} onClick={() => setModalStatut(k)}
+                    style={{ flex: 1, padding: "10px 8px", borderRadius: 8, border: `2px solid ${modalStatut === k ? v.color : "#2e2a3e"}`, background: modalStatut === k ? v.bg : "#1a1a2e", color: v.color, fontFamily: "'JetBrains Mono',monospace", fontSize: 12, cursor: "pointer", fontWeight: 600, transition: "all 0.15s" }}>
+                    {v.label}
+                  </button>
+                ))}
+              </div>
             </div>
-            {modePaiementRecup !== "espece" && (
-              <div style={{ background: "#1a1a2e", border: "1px solid #2e2a3e", borderRadius: 8, padding: "10px 14px", marginBottom: 12, fontSize: 12, fontFamily: "'JetBrains Mono',monospace", color: "#8a7f9a" }}>
-                Cheque et Traite ne s ajoutent pas a la caisse espece.
+            {modalStatut === "paye" && (
+              <div className="two">
+                <div className="ig">
+                  <label>Date paiement</label>
+                  <input type="date" className="inp" value={modalDate} onChange={e => setModalDate(e.target.value)} />
+                </div>
+                <div className="ig">
+                  <label>Mode</label>
+                  <select className="inp" value={modalMode} onChange={e => setModalMode(e.target.value)}>
+                    <option value="espece">Espece</option>
+                    <option value="cheque">Chèque</option>
+                    <option value="virement">Virement</option>
+                    <option value="tpe">TPE</option>
+                  </select>
+                </div>
+              </div>
+            )}
+            {modalStatut === "manque" && (
+              <div style={{ background: "#2d0d0d", border: "1px solid #7f1d1d44", borderRadius: 8, padding: "10px 14px", marginBottom: 12, fontSize: 12, fontFamily: "'JetBrains Mono',monospace", color: "#f87171" }}>
+                Manque = montant confirmé comme non récupérable pour cet état.
               </div>
             )}
             <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 16 }}>
-              <button className="btn bg" onClick={() => { setShowRecoupModal(false); setSelectedEcart(null); setMontantRecup(""); setModePaiementRecup("espece"); }}>Annuler</button>
-              <button className="btn bp" onClick={handleRecouvrement} disabled={loading || !selectedEcart}>{loading ? "..." : "Confirmer"}</button>
+              <button className="btn bg" onClick={() => setModalLigne(null)}>Annuler</button>
+              <button className="btn bp" onClick={confirmerStatut} disabled={loading}>{loading ? "..." : "Confirmer"}</button>
             </div>
           </div>
         </div>
@@ -753,7 +817,7 @@ export default function App() {
         <div className="tabs">
           {["etats", "versement", "caisse"].map(t => (
             <button key={t} className={"tab " + (finTab === t ? "active" : "")}
-              onClick={() => { setFinTab(t); if (t === "etats") { setFinStep("list"); loadEtats(); } if (t === "caisse") { loadCaisses(); loadCaissePreview(caisseDate); loadEcartsARecuperer(); } if (t === "versement") loadVersements(); }}>
+              onClick={() => { setFinTab(t); if (t === "etats") { setFinStep("list"); loadEtats(); } if (t === "caisse") { loadCaisses(); loadCaissePreview(caisseDate); } if (t === "versement") loadVersements(); }}>
               {t === "etats" ? "Etats de vente" : t === "versement" ? "Versement Banque" : "Caisse Espece"}
             </button>
           ))}
@@ -788,6 +852,7 @@ export default function App() {
               </div>
             )}
 
+            {/* SAISIE MONTANTS */}
             {finStep === "saisie" && selectedEtat && (
               <div>
                 <button className="btn bg" style={{ fontSize: 12, padding: "8px 14px", marginBottom: 20 }} onClick={() => { setFinStep("list"); loadEtats(); }}>← Retour</button>
@@ -816,11 +881,14 @@ export default function App() {
               </div>
             )}
 
+            {/* ÉTAPE ÉCART — saisie des lignes clients */}
             {finStep === "ecart" && selectedEtat && (
               <div>
                 <button className="btn bg" style={{ fontSize: 12, padding: "8px 14px", marginBottom: 20 }} onClick={() => { setFinStep("list"); loadEtats(); }}>← Retour</button>
+
+                {/* Résumé écart */}
                 <div className="card">
-                  <div className="sb" style={{ borderColor: "#92400e", color: "#fbbf24" }}>Resultat</div>
+                  <div className="sb" style={{ borderColor: "#92400e", color: "#fbbf24" }}>Résultat</div>
                   <div className="st">Etat du {selectedEtat.date}</div>
                   <div style={{ background: "#2d1a0d", border: "1px solid #92400e44", borderRadius: 8, padding: "16px 20px", marginBottom: 16 }}>
                     <div className="read-row"><span style={{ color: "#8a7f9a" }}>Total saisi</span><span style={{ fontFamily: "'JetBrains Mono',monospace", color: "#a78bfa", fontWeight: 600 }}>{fmt(selectedEtat.totalFin)}</span></div>
@@ -831,110 +899,71 @@ export default function App() {
                   </div>
                   {Math.abs(ecartGlobal) < 0.001 && (
                     <div style={{ background: "#0d2318", border: "1px solid #16532d44", borderRadius: 8, padding: "12px 16px", color: "#4ade80", fontFamily: "'JetBrains Mono',monospace", fontSize: 13, textAlign: "center" }}>
-                      {selectedEtat.finFields && Object.keys(selectedEtat.finFields).some(k => {
-                        const mode = (selectedEtat.finModes?.[k]) || FIELD_MODES[k] || "espece";
-                        return parseFloat(selectedEtat.finFields[k] || 0) !== 0 && mode !== "espece";
-                      })
-                        ? "Mode non-espece detecte. En attente de fermeture par l'administrateur."
-                        : "En attente de fermeture par l administrateur."}
+                      En attente de fermeture par l'administrateur.
                     </div>
                   )}
                 </div>
 
                 {Math.abs(ecartGlobal) > 0.001 && (
                   <>
+                    {/* Progression couverture */}
                     <div className="card">
                       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, marginBottom: 6 }}>
                         <span style={{ color: "#8a7f9a", fontFamily: "'JetBrains Mono',monospace" }}>Ecart total</span>
                         <span style={{ color: "#fbbf24", fontFamily: "'JetBrains Mono',monospace", fontWeight: 600 }}>{fmt(Math.abs(ecartGlobal))}</span>
                       </div>
                       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, marginBottom: 8 }}>
-                        <span style={{ color: "#8a7f9a", fontFamily: "'JetBrains Mono',monospace" }}>Justifie ecart</span>
-                        <span style={{ color: "#4ade80", fontFamily: "'JetBrains Mono',monospace", fontWeight: 600 }}>{fmt(totalJustifie)}</span>
+                        <span style={{ color: "#8a7f9a", fontFamily: "'JetBrains Mono',monospace" }}>Total lignes</span>
+                        <span style={{ color: totalLignes >= Math.abs(ecartGlobal) - 0.001 ? "#4ade80" : "#a78bfa", fontFamily: "'JetBrains Mono',monospace", fontWeight: 600 }}>{fmt(totalLignes)}</span>
                       </div>
-                      <div className="pb"><div className="pbi" style={{ width: (Math.abs(ecartGlobal) > 0 ? Math.min(100, (totalJustifie / Math.abs(ecartGlobal)) * 100) : 0) + "%", background: restant < 0.001 ? "#22c55e" : "linear-gradient(90deg,#7c3aed,#a855f7)" }} /></div>
-                      <div style={{ fontSize: 12, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380", textAlign: "right" }}>Restant : {fmt(restant)}</div>
-                      {restant < 0.001 && (
+                      <div className="pb">
+                        <div className="pbi" style={{ width: (Math.abs(ecartGlobal) > 0 ? Math.min(100, (totalLignes / Math.abs(ecartGlobal)) * 100) : 0) + "%", background: restantACouvrir < 0.001 ? "#22c55e" : "linear-gradient(90deg,#7c3aed,#a855f7)" }} />
+                      </div>
+                      {restantACouvrir > 0.001 && (
+                        <div style={{ fontSize: 12, fontFamily: "'JetBrains Mono',monospace", color: "#f87171", textAlign: "right" }}>Restant à distribuer : {fmt(restantACouvrir)}</div>
+                      )}
+                      {restantACouvrir < 0.001 && lignesNonTraitees > 0 && (
+                        <div style={{ fontSize: 12, fontFamily: "'JetBrains Mono',monospace", color: "#fbbf24", textAlign: "right" }}>{lignesNonTraitees} ligne(s) encore "À voir"</div>
+                      )}
+                      {peutFermer && (
                         <div style={{ marginTop: 12, background: "#0d2318", border: "1px solid #16532d44", borderRadius: 8, padding: "12px 16px", color: "#4ade80", fontFamily: "'JetBrains Mono',monospace", fontSize: 13, textAlign: "center" }}>
-                          Tous les ecarts sont justifies. En attente de fermeture par l administrateur.
+                          Toutes les lignes sont traitées. En attente de fermeture par l'administrateur.
                         </div>
                       )}
                     </div>
+
+                    {/* Formulaire nouvelle ligne */}
                     <div className="card">
-                      <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380", marginBottom: 16 }}>AJOUTER UN ECART</div>
+                      <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380", marginBottom: 16 }}>AJOUTER UNE LIGNE D'ÉCART</div>
                       <div className="two">
-                        <div className="ig"><label>Type</label>
-                          <select className="inp" value={newJust.type} onChange={e => setNewJust({ ...newJust, type: e.target.value })}>
-                            <option value="">Selectionner</option>
-                            {JUSTIFICATION_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-                          </select>
+                        <div className="ig">
+                          <label>Nom du client</label>
+                          <input type="text" className="inp" placeholder="Ex: Client A" value={newLigne.client} onChange={e => setNewLigne({ ...newLigne, client: e.target.value })} />
                         </div>
                         <div className="ig">
-                          <label>Mode de paiement</label>
-                          <select className="inp" value={newJust.modePaiement} onChange={e => setNewJust({ ...newJust, modePaiement: e.target.value })}>
-                            <option value="espece">Espece</option>
-                            <option value="tpe">TPE</option>
-                            <option value="virement">Virement</option>
-                            <option value="cheque">Cheque</option>
-                          </select>
+                          <label>Montant (TND)</label>
+                          <input type="number" className="inp" placeholder="0.000" step="0.001" value={newLigne.montant} onChange={e => setNewLigne({ ...newLigne, montant: e.target.value })} />
                         </div>
                       </div>
-                      <div className="two">
-                        <div className="ig"><label>Montant (TND)</label><input type="number" className="inp" placeholder="0.000" step="0.001" value={newJust.montant} onChange={e => setNewJust({ ...newJust, montant: e.target.value })} /></div>
-                        <div className="ig">
-                          <label>Date de l ecart</label>
-                          <input type="date" className="inp" value={newJust.dateEcart} onChange={e => setNewJust({ ...newJust, dateEcart: e.target.value })} />
-                        </div>
+                      <div className="ig">
+                        <label>Note (optionnel)</label>
+                        <input type="text" className="inp" placeholder="Description..." value={newLigne.note} onChange={e => setNewLigne({ ...newLigne, note: e.target.value })} />
                       </div>
-                      {/* Champ pièce jointe pour non-espece */}
-                      {newJust.modePaiement !== "espece" && (
-                        <div className="ig">
-                          <label>Pièce jointe {newJust.modePaiement === "tpe" ? "(ticket TPE)" : newJust.modePaiement === "virement" ? "(preuve virement)" : "(cheque scan)"} *</label>
-                          <input
-                            type="file"
-                            className="inp"
-                            accept="image/*,.pdf"
-                            onChange={e => setNewJust({ ...newJust, pieceJointe: e.target.files[0] })}
-                            style={{ padding: "8px" }}
-                          />
-                          {newJust.pieceJointe && <div style={{ fontSize: 12, color: "#4ade80", fontFamily: "'JetBrains Mono',monospace", marginTop: 4 }}>{newJust.pieceJointe.name}</div>}
-                        </div>
-                      )}
-                      <div className="ig"><label>Note</label><textarea className="inp" rows={2} value={newJust.note} onChange={e => setNewJust({ ...newJust, note: e.target.value })} style={{ resize: "vertical" }} /></div>
-                      <button className="btn bp" onClick={addJustification} disabled={loading}>{loading ? "..." : "+ Ajouter"}</button>
+                      <button className="btn bp" onClick={addLigneEcart} disabled={loading || restantACouvrir < 0.001}>{loading ? "..." : "+ Ajouter la ligne"}</button>
                     </div>
-                    {justifications.length > 0 && (
+
+                    {/* Liste des lignes */}
+                    {lignesEcart.length > 0 && (
                       <div className="card">
-                        <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380", marginBottom: 14 }}>ECARTS ({justifications.length})</div>
-                        {justifications.map(j => (
-                          <div className="ji" key={j.id}>
-                            <div style={{ flex: 1 }}>
-                              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                                <span style={{ fontWeight: 600, color: "#a78bfa" }}>{JUST_LABELS[j.type]}</span>
-                                <span style={{ fontFamily: "'JetBrains Mono',monospace", color: "#fbbf24", marginLeft: "auto" }}>{fmt(j.montant)}</span>
-                              </div>
-                              <div style={{ fontSize: 13, color: "#8a7f9a", marginBottom: 4 }}>{j.note}</div>
-                              <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 4 }}>
-
-
-                                {j.dateEcart && <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380" }}>Ecart: {j.dateEcart}</span>}
-                                {j.dateRecuperation && <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380" }}>Recup: {j.dateRecuperation}</span>}
-                                {j.modePaiement && (
-                                  <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: j.modePaiement === "espece" ? "#4ade80" : j.modePaiement === "cheque" ? "#a78bfa" : "#fbbf24" }}>
-                                    {j.modePaiement === "espece" ? "Espece" : j.modePaiement === "tpe" ? "TPE" : j.modePaiement === "virement" ? "Virement" : "Cheque"}
-                                  </span>
-                                )}
-                                {j.modePaiement === "espece" && j.recupere && <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#4ade80" }}>+ Caisse {j.dateRecuperation}</span>}
-                              </div>
-                              {j.pieceJointe && (
-                                <a href={"http://137.74.42.45:3001/uploads/" + j.pieceJointe} target="_blank" rel="noreferrer" className="file-link" style={{ display: "inline-block", marginTop: 4 }}>
-                                  📎 Voir piece jointe
-                                </a>
-                              )}
-                            </div>
-                            <div className="locked-badge" style={{ alignSelf: "flex-start", fontSize: 10 }}>VERROUILLE</div>
-                          </div>
-                        ))}
+                        <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380", marginBottom: 6 }}>LIGNES D'ÉCART ({lignesEcart.length})</div>
+                        <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+                          {Object.entries(STATUT_CONFIG).map(([k, v]) => {
+                            const count = lignesEcart.filter(l => l.statut === k).length;
+                            if (count === 0) return null;
+                            return <span key={k} className="statut-badge" style={{ background: v.bg, border: `1px solid ${v.border}`, color: v.color }}>{v.label} × {count}</span>;
+                          })}
+                        </div>
+                        <LignesEcartList lignes={lignesEcart} etatId={selectedEtat.id} canEdit={true} />
                       </div>
                     )}
                   </>
@@ -942,9 +971,10 @@ export default function App() {
               </div>
             )}
 
+            {/* READONLY */}
             {finStep === "readonly" && selectedEtat && (
               <div>
-                <button className="btn bg" style={{ fontSize: 12, padding: "8px 14px", marginBottom: 20 }} onClick={() => { setFinStep("list"); }}>← Retour</button>
+                <button className="btn bg" style={{ fontSize: 12, padding: "8px 14px", marginBottom: 20 }} onClick={() => setFinStep("list")}>← Retour</button>
                 <div className="card">
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
                     <div>
@@ -977,34 +1007,10 @@ export default function App() {
                       </div>
                     </div>
                   )}
-                  {selectedEtat.justifications?.length > 0 && (
+                  {selectedEtat.lignesEcart?.length > 0 && (
                     <div>
-                      <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380", marginBottom: 12 }}>ECARTS AJOUTES ({selectedEtat.justifications.length})</div>
-                      {selectedEtat.justifications.map(j => (
-                        <div className="ji" key={j.id} style={{ cursor: "default" }}>
-                          <div style={{ flex: 1 }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                              <span style={{ fontWeight: 600, color: "#a78bfa" }}>{JUST_LABELS[j.type]}</span>
-                              <span style={{ fontFamily: "'JetBrains Mono',monospace", color: "#fbbf24", marginLeft: "auto" }}>{fmt(j.montant)}</span>
-                            </div>
-                            <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-                              {j.dateEcart && <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380" }}>Date ecart: {j.dateEcart}</span>}
-                              {j.dateRecuperation && <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380" }}>Recupere: {j.dateRecuperation}</span>}
-                              {j.modePaiement && (
-                                <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: j.modePaiement === "espece" ? "#4ade80" : j.modePaiement === "cheque" ? "#a78bfa" : "#fbbf24" }}>
-                                  {j.modePaiement === "espece" ? "Espece" : j.modePaiement === "tpe" ? "TPE" : j.modePaiement === "virement" ? "Virement" : "Cheque"}
-                                </span>
-                              )}
-                            </div>
-                            {j.pieceJointe && (
-                              <a href={"http://137.74.42.45:3001/uploads/" + j.pieceJointe} target="_blank" rel="noreferrer" className="file-link" style={{ display: "inline-block", marginTop: 4 }}>
-                                📎 Voir piece jointe
-                              </a>
-                            )}
-                          </div>
-                          <div className="locked-badge" style={{ alignSelf: "flex-start", fontSize: 10 }}>VERROUILLE</div>
-                        </div>
-                      ))}
+                      <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380", marginBottom: 12 }}>LIGNES D'ÉCART ({selectedEtat.lignesEcart.length})</div>
+                      <LignesEcartList lignes={selectedEtat.lignesEcart} etatId={selectedEtat.id} canEdit={false} />
                     </div>
                   )}
                 </div>
@@ -1059,33 +1065,17 @@ export default function App() {
         {/* TAB CAISSE */}
         {finTab === "caisse" && (
           <div>
-            {/* Ecarts a recuperer */}
-            {ecartsARecuperer.length > 0 && (
-              <div style={{ background: "#2d1a0d", border: "1px solid #92400e44", borderRadius: 10, padding: "14px 20px", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
-                <div>
-                  <div style={{ fontWeight: 600, marginBottom: 2 }}>{ecartsARecuperer.length} ecart(s) a recuperer</div>
-                  <div style={{ fontSize: 12, color: "#8a7f9a", fontFamily: "'JetBrains Mono',monospace" }}>Total : {fmt(ecartsARecuperer.reduce((s, e) => s + e.montant, 0))}</div>
-                </div>
-                <button className="btn" style={{ background: "linear-gradient(135deg,#92400e,#f59e0b)", color: "#fff", fontSize: 13, padding: "8px 16px" }}
-                  onClick={() => setShowRecoupModal(true)}>
-                  Marquer comme recupere
-                </button>
-              </div>
-            )}
-
             <div className="card">
               <div className="sb">Nouvelle entree caisse</div>
               <div className="st">Caisse Espece</div>
               <div className="ss">Initial = Reste du jour precedent (automatique)</div>
               <div className="ig"><label>Date</label><input type="date" className="inp" value={caisseDate} onChange={e => { setCaisseDate(e.target.value); loadCaissePreview(e.target.value); }} /></div>
-
               {caissePreview && (
                 <div style={{ marginBottom: 16 }}>
                   <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#6b6380", marginBottom: 8 }}>CALCUL AUTOMATIQUE POUR LE {caisseDate}</div>
                   <CaisseCalcBox data={caissePreview} />
                 </div>
               )}
-
               <div className="ig"><label>Depenses du jour (TND)</label><input type="number" className="inp" placeholder="0.000" step="0.001" value={caisseDeps} onChange={e => { setCaisseDeps(e.target.value); loadCaissePreview(caisseDate, e.target.value); }} /></div>
               <div className="ig"><label>Note (optionnel)</label><textarea className="inp" rows={2} value={caisseNote} onChange={e => setCaisseNote(e.target.value)} style={{ resize: "vertical" }} /></div>
               <hr />
@@ -1093,7 +1083,6 @@ export default function App() {
                 <button className="btn bp" onClick={handleCaisse} disabled={loading}>{loading ? "..." : "Enregistrer et verrouiller"}</button>
               </div>
             </div>
-
             {caisses.length > 0 && (
               <div>
                 <div className="st" style={{ marginBottom: 16 }}>Historique caisse</div>
@@ -1115,7 +1104,5 @@ export default function App() {
         )}
       </div>
     </div>
-  
   );
-
-  }
+}
